@@ -48,7 +48,8 @@ function App() {
   const cameraInputRef = useRef(null);
   const scrollRef = useRef(null);
 
-  const IMGBB_API_KEY = '2447ec54156a52c2b609cc1ea5d177d8';
+  // API KEY SEGURA DESDE EL ENTORNO
+  const IMGBB_API_KEY = import.meta.env.VITE_IMGBB_API_KEY;
 
   // VERIFICACIÓN DE ADMINISTRADOR
   const ES_ADMIN = user?.email === 'martinub250@gmail.com';
@@ -57,7 +58,6 @@ function App() {
     const unsubscribe = onAuthStateChanged(auth, async (usuarioActual) => {
       setUser(usuarioActual);
       if (usuarioActual) {
-        // Verificar si ya existe en Firestore
         const userDocRef = doc(db, 'usuarios', usuarioActual.uid);
         const snapshot = await getDocs(query(collection(db, 'usuarios')));
         let existe = false;
@@ -89,7 +89,6 @@ function App() {
         if (datos.uid !== user.uid) {
           lista.push(datos);
         } else {
-          // Guardar el nombre propio actual
           setNuevoNombreInput(datos.nombre || user.email.split('@')[0]);
         }
       });
@@ -181,7 +180,7 @@ function App() {
       const formData = new FormData();
       formData.append('image', file);
 
-      const respuesta = await fetch(`https://api.api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+      const respuesta = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
         method: 'POST',
         body: formData,
       });
@@ -384,7 +383,6 @@ function App() {
                 <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre || chatActivo.email.split('@')[0]}</div>
                   
-                  {/* BOTÓN VACIAR TODO EL CHAT (SI HAY MENSAJES) */}
                   {mensajes.length > 0 && (
                     <button 
                       onClick={vaciarChat} 
@@ -421,21 +419,17 @@ function App() {
                             gap: '8px'
                           }}>
                             <div style={{ flex: 1 }}>
-                              {/* IMAGEN */}
                               {m.imagenUrl && (
                                 <img src={m.imagenUrl} alt="Adjunto" style={{ width: '100%', borderRadius: '10px', display: 'block' }} />
                               )}
                               
-                              {/* AUDIO / MENSAJE DE VOZ */}
                               {m.audioUrl && (
                                 <audio controls src={m.audioUrl} style={{ maxWidth: '220px', height: '40px' }} />
                               )}
 
-                              {/* TEXTO */}
                               {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                             </div>
 
-                            {/* BOTÓN 🗑️ PARA BORRAR EL MENSAJE (ADMIN O AUTOR) */}
                             {puedeEliminar && (
                               <button 
                                 onClick={() => eliminarMensaje(m.id)}
@@ -471,7 +465,6 @@ function App() {
                   <input type="file" accept="image/*" ref={galleryInputRef} onChange={(e) => subirImagenAPI(e.target.files[0])} style={{ display: 'none' }} />
                   <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={(e) => subirImagenAPI(e.target.files[0])} style={{ display: 'none' }} />
                   
-                  {/* CÁMARA */}
                   <button 
                     type="button" 
                     onClick={() => cameraInputRef.current.click()} 
@@ -482,7 +475,6 @@ function App() {
                     📷
                   </button>
 
-                  {/* GALERÍA */}
                   <button 
                     type="button" 
                     onClick={() => galleryInputRef.current.click()} 
@@ -493,7 +485,6 @@ function App() {
                     🖼️
                   </button>
 
-                  {/* BOTÓN DE MICRÓFONO / GRABAR AUDIO */}
                   {!grabandoAudio ? (
                     <button 
                       type="button" 
