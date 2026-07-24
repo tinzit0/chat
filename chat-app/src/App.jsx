@@ -22,7 +22,7 @@ import {
   updateDoc
 } from 'firebase/firestore';
 
-// Servidores STUN gratuitos de Google para negociar conexiones WebRTC tras NAT/Routers
+// Servidores STUN gratuitos de Google para conectar WebRTC tras Routers / NAT
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -235,15 +235,28 @@ function App() {
     }
   };
 
-  // --- LÓGICA DE LLAMADA NATIVA WEBRTC ---
+  // --- LÓGICA DE LLAMADA NATIVA WEBRTC ADAPTATIVA ---
+  const obtenerStreamMultimedia = async () => {
+    try {
+      // Intentar pedir cámara y micrófono primero
+      return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    } catch (err) {
+      try {
+        // Si no hay cámara o falla el video, pedir SOLO micrófono (Llamada de voz)
+        return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+      } catch (errAudio) {
+        throw errAudio;
+      }
+    }
+  };
+
   const iniciarLlamadaNativa = async () => {
     if (!chatActivo || !user) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
     const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
 
     try {
-      // 1. Obtener audio/video local
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await obtenerStreamMultimedia();
       localStreamRef.current = stream;
       setLlamadaEnCurso(true);
 
@@ -251,7 +264,6 @@ function App() {
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
       }, 300);
 
-      // 2. Crear conexión RTCPeerConnection
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
@@ -264,20 +276,17 @@ function App() {
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
       };
 
-      // 3. Generar Oferta WebRTC
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
       await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid });
 
-      // Candiadatos ICE locales
       pc.onicecandidate = (e) => {
         if (e.candidate) {
           addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), e.candidate.toJSON());
         }
       };
 
-      // 4. Escuchar Respuesta (Answer) del receptor
       unsubLlamadaRef.current = onSnapshot(llamadaDocRef, (snap) => {
         const data = snap.data();
         if (pc.remoteDescription === null && data?.answer) {
@@ -286,7 +295,6 @@ function App() {
         }
       });
 
-      // Escuchar candidatos ICE remotos
       onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
@@ -295,18 +303,17 @@ function App() {
         });
       });
 
-      // Enviar mensaje de invitación al chat
       await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
         deUid: user.uid,
         paraUid: chatActivo.uid,
-        texto: '📞 Inició una videollamada nativa.',
+        texto: '📞 Inició una llamada.',
         esLlamada: true,
         leido: false,
         creadoEn: serverTimestamp()
       });
 
     } catch (err) {
-      alert("No se pudo acceder a la cámara o micrófono.");
+      alert("Permiso denegado o no se detectó micrófono/cámara. Revisa los permisos del navegador en la barra de direcciones.");
       colgarLlamada();
     }
   };
@@ -317,7 +324,7 @@ function App() {
     const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await obtenerStreamMultimedia();
       localStreamRef.current = stream;
       setLlamadaEnCurso(true);
 
@@ -367,7 +374,7 @@ function App() {
       });
 
     } catch (err) {
-      alert("Error al responder la llamada.");
+      alert("Permiso denegado para el micrófono o cámara.");
       colgarLlamada();
     }
   };
@@ -551,7 +558,7 @@ function App() {
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.92)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
             <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative' }}>
               
-              {/* VIDEO REMOTO (Grande) */}
+              {/* VIDEO REMOTO */}
               <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' }} />
               
               {/* VIDEO LOCAL (Miniatura flotante) */}
