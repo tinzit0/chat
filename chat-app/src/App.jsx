@@ -1,4 +1,4 @@
-// src/App.jsx
+¿// src/App.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { auth, db } from './firebase';
 import { 
@@ -22,7 +22,6 @@ import {
   updateDoc
 } from 'firebase/firestore';
 
-// Servidores STUN gratuitos de Google para conectar WebRTC tras Routers / NAT
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -47,7 +46,6 @@ function App() {
   
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   
-  // ESTADOS Y REFERENCIAS PARA LLAMADA WEBRTC PROPIA
   const [llamadaEnCurso, setLlamadaEnCurso] = useState(false);
   const [micSilenciado, setMicSilenciado] = useState(false);
   const [camApagada, setCamApagada] = useState(false);
@@ -58,23 +56,17 @@ function App() {
   const localStreamRef = useRef(null);
   const unsubLlamadaRef = useRef(null);
 
-  // ESTADOS Y REFERENCIAS PARA GRABAR AUDIO
   const [grabandoAudio, setGrabandoAudio] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // Referencias de inputs y scroll
   const galleryInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const scrollRef = useRef(null);
   
-  // Ref para el sonido de notificación
   const notifAudioRef = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3'));
 
-  // API KEY SEGURA DESDE EL ENTORNO
   const IMGBB_API_KEY = import.meta.env.VITE_IMGBB_API_KEY;
-
-  // VERIFICACIÓN DE ADMINISTRADOR
   const ES_ADMIN = user?.email === 'martinub250@gmail.com';
 
   useEffect(() => {
@@ -126,7 +118,6 @@ function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // Escuchar mensajes, marcar como LEÍDOS y notificar
   useEffect(() => {
     if (!user || !chatActivo) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
@@ -184,20 +175,29 @@ function App() {
   const handleAuth = async (e) => {
     e.preventDefault();
     setError('');
+    
+    const emailAProcesar = email.trim();
+    const passAProcesar = password;
+
+    if (!emailAProcesar || !passAProcesar) {
+      setError('Por favor completa todos los campos.');
+      return;
+    }
+
     try {
       if (esRegistro) {
         if (!nombrePersona.trim()) {
           setError('Por favor ingresa un nombre para mostrar.');
           return;
         }
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        const cred = await createUserWithEmailAndPassword(auth, emailAProcesar, passAProcesar);
         await setDoc(doc(db, 'usuarios', cred.user.uid), {
           uid: cred.user.uid,
           email: cred.user.email,
           nombre: nombrePersona.trim()
         });
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        await signInWithEmailAndPassword(auth, emailAProcesar, passAProcesar);
       }
     } catch (err) {
       setError(err.message);
@@ -235,12 +235,8 @@ function App() {
     }
   };
 
-  // --- LÓGICA DE CAPTURA ROBUSTA PARA MÓVILES Y NAVEGADORES DE ESCRITORIO ---
   const obtenerStreamMultimedia = async () => {
-    // 1. Obtener micrófono (prioridad esencial)
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-
-    // 2. Intentar adjuntar la cámara sin bloquear si falla
     try {
       const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
       const videoTrack = videoStream.getVideoTracks()[0];
@@ -250,7 +246,6 @@ function App() {
     } catch (eVideo) {
       console.warn("Cámara no disponible, iniciando llamada solo de voz:", eVideo);
     }
-
     return stream;
   };
 
@@ -557,18 +552,12 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* INTERFAZ FLOTANTE NATIVA DE LLAMADA WEBRTC */}
         {llamadaEnCurso && (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.92)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
             <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-              
-              {/* VIDEO REMOTO */}
               <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' }} />
-              
-              {/* VIDEO LOCAL (Miniatura flotante) */}
               <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333' }} />
 
-              {/* CONTROLES NATIVOS DE LLAMADA */}
               <div style={{ position: 'absolute', bottom: '15px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '15px', padding: '10px' }}>
                 <button 
                   onClick={alternarMic} 
@@ -862,6 +851,7 @@ function App() {
     <div style={{ maxWidth: '350px', margin: '80px auto', padding: '20px', border: '1px solid #ccc', borderRadius: '8px', fontFamily: 'sans-serif', backgroundColor: '#ffffff' }}>
       <h2 style={{ textAlign: 'center', marginTop: 0, color: '#0056b3' }}>{esRegistro ? 'Crear Cuenta' : 'Iniciar Sesión'}</h2>
       {error && <p style={{ color: 'red', fontSize: '12px', textAlign: 'center' }}>{error}</p>}
+      
       <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {esRegistro && (
           <input 
@@ -873,26 +863,34 @@ function App() {
             style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
           />
         )}
+        
         <input 
           type="email" 
+          name="user_email_input"
+          autoComplete="username"
           placeholder="Correo electrónico" 
           value={email} 
           onChange={(e) => setEmail(e.target.value)} 
           required 
           style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
         />
+        
         <input 
           type="password" 
+          name="user_password_input"
+          autoComplete="current-password"
           placeholder="Contraseña (mín. 6 caracteres)" 
           value={password} 
           onChange={(e) => setPassword(e.target.value)} 
           required 
           style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
         />
+        
         <button type="submit" style={{ padding: '10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
           {esRegistro ? 'Registrarse' : 'Entrar'}
         </button>
       </form>
+      
       <p style={{ textAlign: 'center', fontSize: '12px', marginTop: '15px' }}>
         {esRegistro ? '¿Ya tienes una cuenta?' : '¿No tienes cuenta?'} {' '}
         <span onClick={() => { setEsRegistro(!esRegistro); setError(''); }} style={{ color: '#0056b3', cursor: 'pointer', fontWeight: 'bold' }}>
