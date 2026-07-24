@@ -48,6 +48,9 @@ function App() {
   const galleryInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const scrollRef = useRef(null);
+  
+  // Ref para el sonido de notificación
+  const notifAudioRef = useRef(new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3'));
 
   // API KEY SEGURA DESDE EL ENTORNO
   const IMGBB_API_KEY = import.meta.env.VITE_IMGBB_API_KEY;
@@ -55,7 +58,6 @@ function App() {
   // VERIFICACIÓN DE ADMINISTRADOR
   const ES_ADMIN = user?.email === 'martinub250@gmail.com';
 
-  // Pedir permiso para Notificaciones del Navegador al entrar
   useEffect(() => {
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
@@ -105,7 +107,7 @@ function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // Escuchar mensajes y marcar como LEÍDOS + NOTIFICACIONES
+  // Escuchar mensajes, marcar como LEÍDOS y notificar
   useEffect(() => {
     if (!user || !chatActivo) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
@@ -120,15 +122,15 @@ function App() {
         const data = docSnap.data();
         docs.push({ id: docSnap.id, ...data });
 
-        // Marcar como VISTO/LEÍDO si el mensaje no es mío y no está leído aún
+        // Marcar como VISTO si el mensaje no es mío y no estaba leído
         if (data.deUid !== user.uid && !data.leido) {
           updateDoc(doc(db, 'chats_privados', chatId, 'mensajes', docSnap.id), {
             leido: true
-          });
+          }).catch(() => {});
         }
       });
 
-      // Si llega un nuevo mensaje recibido estando en segundo plano, emitir Notificación
+      // Si llega un nuevo mensaje del otro usuario, hacer sonar notificación
       if (docs.length > mensajes.length && mensajes.length > 0) {
         const ultimoMensaje = docs[docs.length - 1];
         if (ultimoMensaje.deUid !== user.uid) {
@@ -139,32 +141,23 @@ function App() {
       setMensajes(docs);
     });
     return () => unsubscribe();
-  }, [user, chatActivo]);
+  }, [user, chatActivo, mensajes.length]);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, subiendoImagen, grabandoAudio]);
 
-  // Función para reproducir sonido y notificación
   const lanzarNotificacion = (remitente, texto) => {
-    // Reproducir un bip/pop suave mediante Web Audio API
+    // Reproducir sonido de notificación
     try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.frequency.value = 587.33; // Tono de notificación suave
-      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.15);
+      notifAudioRef.current.currentTime = 0;
+      notifAudioRef.current.play().catch(() => {});
     } catch (e) {}
 
-    // Mostrar notificación nativa si la ventana está oculta/desenfocada
+    // Notificación en pantalla si la ventana no está visible
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       new Notification(`💬 ${remitente}`, {
-        body: texto,
-        icon: '/favicon.ico'
+        body: texto
       });
     }
   };
@@ -263,7 +256,6 @@ function App() {
     if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
-  // --- FUNCIONES PARA GRABAR AUDIO ---
   const iniciarGrabacionAudio = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -324,7 +316,6 @@ function App() {
     }
   };
 
-  // --- FUNCIONES DE ELIMINACIÓN ---
   const eliminarMensaje = async (mensajeId) => {
     if (!chatActivo || !user) return;
     if (window.confirm("¿Seguro que deseas eliminar este mensaje?")) {
@@ -483,9 +474,17 @@ function App() {
                               {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                             </div>
 
-                            {/* INDICADOR DE VISTO (Doble Check) PARA MIS MENSAJES */}
+                            {/* INDICADOR DE VISTO (Doble Check Azul cuando leido es true) */}
                             {esMio && (
-                              <span style={{ fontSize: '12px', color: m.leido ? '#80d4ff' : '#ccc', fontWeight: 'bold', marginLeft: '4px' }} title={m.leido ? "Visto" : "Enviado"}>
+                              <span 
+                                style={{ 
+                                  fontSize: '13px', 
+                                  color: m.leido ? '#00e676' : '#b0bec5', 
+                                  fontWeight: 'bold', 
+                                  marginLeft: '4px' 
+                                }} 
+                                title={m.leido ? "Visto" : "Enviado"}
+                              >
                                 {m.leido ? '✓✓' : '✓'}
                               </span>
                             )}
