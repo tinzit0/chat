@@ -30,12 +30,13 @@ function App() {
   const [mensajes, setMensajes] = useState([]);
   const [nuevoMensaje, setNuevoMensaje] = useState('');
   
-  // Nuevos estados para las imágenes
   const [subiendoImagen, setSubiendoImagen] = useState(false);
-  const fileInputRef = useRef(null);
+  
+  // Referencias para las dos opciones de imagen
+  const galleryInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const scrollRef = useRef(null);
 
-  // Tu API KEY de ImgBB (la saqué de tu código original)
   const IMGBB_API_KEY = '2447ec54156a52c2b609cc1ea5d177d8';
 
   useEffect(() => {
@@ -116,18 +117,15 @@ function App() {
     }
   };
 
-  // NUEVA FUNCIÓN: Subir imagen y enviarla como mensaje
-  const handleSubirImagen = async (e) => {
-    const file = e.target.files[0];
+  // Función general para procesar y subir cualquier imagen seleccionada
+  const subirImagenAPI = async (file) => {
     if (!file || !chatActivo) return;
 
     setSubiendoImagen(true);
     try {
-      // 1. Preparamos la imagen para enviarla a ImgBB
       const formData = new FormData();
       formData.append('image', file);
 
-      // 2. Subimos la imagen
       const respuesta = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
         method: 'POST',
         body: formData,
@@ -139,28 +137,26 @@ function App() {
         const urlImagen = datos.data.url;
         const chatId = [user.uid, chatActivo.uid].sort().join('_');
         
-        // 3. Guardamos el mensaje en Firebase con la URL de la imagen
         await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
           deUid: user.uid,
           paraUid: chatActivo.uid,
-          texto: '', // Sin texto, solo imagen
+          texto: '',
           imagenUrl: urlImagen,
           creadoEn: serverTimestamp()
         });
       } else {
-        alert("Error al subir la imagen a ImgBB.");
+        alert("Error al subir la imagen.");
       }
     } catch (error) {
       console.error("Error:", error);
       alert("Hubo un problema de conexión al subir la imagen.");
     }
     setSubiendoImagen(false);
-    
-    // Limpiamos el input para poder subir la misma foto de nuevo si queremos
-    if (fileInputRef.current) fileInputRef.current.value = '';
+
+    if (galleryInputRef.current) galleryInputRef.current.value = '';
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
-  // --- VISTA 1: APLICACIÓN DE CHAT ---
   if (user) {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
@@ -230,18 +226,15 @@ function App() {
                             wordBreak: 'break-word',
                             fontSize: '14px'
                           }}>
-                            {/* SI HAY IMAGEN, LA DIBUJAMOS */}
                             {m.imagenUrl && (
-                              <img src={m.imagenUrl} alt="Imagen adjunta" style={{ width: '100%', borderRadius: '10px', display: 'block' }} />
+                              <img src={m.imagenUrl} alt="Adjunto" style={{ width: '100%', borderRadius: '10px', display: 'block' }} />
                             )}
-                            {/* SI HAY TEXTO, LO DIBUJAMOS */}
                             {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                           </div>
                         </div>
                       );
                     })
                   )}
-                  {/* Animación de carga si se está subiendo una imagen */}
                   {subiendoImagen && (
                      <div style={{ alignSelf: 'flex-end', marginBottom: '8px', padding: '8px 12px', backgroundColor: '#e9ecef', borderRadius: '12px', fontSize: '12px', color: '#555' }}>
                        <i>Subiendo imagen... 📷</i>
@@ -250,26 +243,47 @@ function App() {
                   <div ref={scrollRef} />
                 </div>
 
-                <form onSubmit={handleEnviarMensaje} style={{ display: 'flex', gap: '8px', padding: '10px', backgroundColor: '#f0f2f5', alignItems: 'center' }}>
+                <form onSubmit={handleEnviarMensaje} style={{ display: 'flex', gap: '6px', padding: '10px', backgroundColor: '#f0f2f5', alignItems: 'center' }}>
                   
-                  {/* INPUT INVISIBLE DE TIPO FILE */}
+                  {/* 1. INPUT OCULTO PARA GALERÍA/ARCHIVOS */}
                   <input 
                     type="file" 
                     accept="image/*" 
-                    ref={fileInputRef} 
-                    onChange={handleSubirImagen} 
+                    ref={galleryInputRef} 
+                    onChange={(e) => subirImagenAPI(e.target.files[0])} 
+                    style={{ display: 'none' }} 
+                  />
+
+                  {/* 2. INPUT OCULTO PARA CÁMARA DIRECTA */}
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    capture="environment" 
+                    ref={cameraInputRef} 
+                    onChange={(e) => subirImagenAPI(e.target.files[0])} 
                     style={{ display: 'none' }} 
                   />
                   
-                  {/* BOTÓN PARA ABRIR LA CÁMARA O GALERÍA */}
+                  {/* BOTÓN CÁMARA (Abre la cámara del celular inmediatamente) */}
                   <button 
                     type="button" 
-                    onClick={() => fileInputRef.current.click()} 
+                    onClick={() => cameraInputRef.current.click()} 
                     disabled={subiendoImagen}
-                    style={{ padding: '10px 12px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                    title="Enviar Imagen"
+                    style={{ padding: '8px 10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '15px' }}
+                    title="Tomar Foto con Cámara"
                   >
                     📷
+                  </button>
+
+                  {/* BOTÓN GALERÍA (Abre el explorador de archivos / fotos guardadas) */}
+                  <button 
+                    type="button" 
+                    onClick={() => galleryInputRef.current.click()} 
+                    disabled={subiendoImagen}
+                    style={{ padding: '8px 10px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '15px' }}
+                    title="Seleccionar de Galería"
+                  >
+                    🖼️
                   </button>
 
                   <input 
@@ -279,7 +293,7 @@ function App() {
                     onChange={(e) => setNuevoMensaje(e.target.value)} 
                     style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #ccc', fontSize: '14px', outline: 'none' }}
                   />
-                  <button type="submit" style={{ padding: '10px 20px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                  <button type="submit" style={{ padding: '10px 18px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
                     Enviar
                   </button>
                 </form>
@@ -296,7 +310,6 @@ function App() {
     );
   }
 
-  // --- VISTA 2: LOGIN ---
   return (
     <div style={{ maxWidth: '350px', margin: '80px auto', padding: '20px', border: '1px solid #ccc', borderRadius: '8px', fontFamily: 'sans-serif', backgroundColor: '#ffffff' }}>
       <h2 style={{ textAlign: 'center', marginTop: 0, color: '#0056b3' }}>{esRegistro ? 'Crear Cuenta' : 'Iniciar Sesión'}</h2>
