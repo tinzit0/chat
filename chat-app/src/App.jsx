@@ -17,19 +17,32 @@ import {
   doc,
   setDoc,
   deleteDoc,
+  getDoc,
   getDocs,
   writeBatch,
   updateDoc
 } from 'firebase/firestore';
 
-// Servidores STUN públicos de Google
+// Servidores STUN + TURN (OpenRelay) para atravesar CGNAT / 4G / 5G
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' }
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelay',
+      credential: 'openrelay'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelay',
+      credential: 'openrelay'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelay',
+      credential: 'openrelay'
+    }
   ]
 };
 
@@ -52,7 +65,7 @@ function App() {
   
   // ESTADOS Y REFERENCIAS PARA LLAMADAS
   const [llamadaEnCurso, setLlamadaEnCurso] = useState(false);
-  const [tipoLlamada, setTipoLlamada] = useState('voz'); // 'voz' o 'video'
+  const [tipoLlamada, setTipoLlamada] = useState('voz');
   const [micSilenciado, setMicSilenciado] = useState(false);
   const [camApagada, setCamApagada] = useState(false);
 
@@ -61,7 +74,7 @@ function App() {
   const remoteAudioRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const unsubLlamadaRef = useRef(null);
+  const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -256,18 +269,20 @@ function App() {
   const vincularStreamRemoto = (remoteStream) => {
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = remoteStream;
-      remoteAudioRef.current.play().catch(e => console.log("Error autostart audio:", e));
+      remoteAudioRef.current.play().catch(() => {});
     }
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch(e => console.log("Error autostart video:", e));
+      remoteVideoRef.current.play().catch(() => {});
     }
   };
 
+  // INICIAR LLAMADA CON ID ÚNICO
   const iniciarLlamadaNativa = async (modo = 'voz') => {
     if (!chatActivo || !user) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
-    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
+    const callId = `call_${Date.now()}`;
+    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callId);
 
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
@@ -301,11 +316,11 @@ function App() {
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
-          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), e.candidate.toJSON());
+          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'offerCandidates'), e.candidate.toJSON());
         }
       };
 
-      unsubLlamadaRef.current = onSnapshot(llamadaDocRef, (snap) => {
+      const unsub1 = onSnapshot(llamadaDocRef, (snap) => {
         const data = snap.data();
         if (pc.remoteDescription === null && data?.answer) {
           const answer = new RTCSessionDescription(data.answer);
@@ -313,7 +328,7 @@ function App() {
         }
       });
 
-      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), (snap) => {
+      const unsub2 = onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'answerCandidates'), (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
@@ -321,12 +336,15 @@ function App() {
         });
       });
 
+      unsubLlamadaRef.current = [unsub1, unsub2];
+
       await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
         deUid: user.uid,
         paraUid: chatActivo.uid,
         texto: modo === 'video' ? '📹 Inició una videollamada.' : '📞 Inició una llamada de voz.',
         esLlamada: true,
         modoLlamada: modo,
+        callId: callId,
         leido: false,
         creadoEn: serverTimestamp()
       });
@@ -337,10 +355,11 @@ function App() {
     }
   };
 
-  const responderLlamadaNativa = async (modo = 'voz') => {
-    if (!chatActivo || !user) return;
+  // RESPONDER LLAMADA USANDO EL CALL_ID ESPECÍFICO
+  const responderLlamadaNativa = async (modo = 'voz', callIdParam = null) => {
+    if (!chatActivo || !user || !callIdParam) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
-    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
+    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callIdParam);
 
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
@@ -367,15 +386,14 @@ function App() {
         vincularStreamRemoto(remoteStream);
       };
 
-      const llamadaSnap = await getDocs(collection(db, 'chats_privados', chatId, 'llamada_activa'));
-      let offerData = null;
-      llamadaSnap.forEach(d => { if (d.id === 'conexion') offerData = d.data().offer; });
-
-      if (!offerData) {
+      const llamadaSnap = await getDoc(llamadaDocRef);
+      if (!llamadaSnap.exists()) {
         alert("La llamada ha finalizado.");
+        colgarLlamada();
         return;
       }
 
+      const offerData = llamadaSnap.data().offer;
       await pc.setRemoteDescription(new RTCSessionDescription(offerData));
 
       const answer = await pc.createAnswer();
@@ -385,17 +403,19 @@ function App() {
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
-          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), e.candidate.toJSON());
+          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'answerCandidates'), e.candidate.toJSON());
         }
       };
 
-      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), (snap) => {
+      const unsub = onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'offerCandidates'), (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
           }
         });
       });
+
+      unsubLlamadaRef.current = [unsub];
 
     } catch (err) {
       alert(`No se pudo responder la llamada: ${err.message}`);
@@ -414,7 +434,10 @@ function App() {
       localStreamRef.current = null;
     }
 
-    if (unsubLlamadaRef.current) unsubLlamadaRef.current();
+    if (unsubLlamadaRef.current && Array.isArray(unsubLlamadaRef.current)) {
+      unsubLlamadaRef.current.forEach(u => u && u());
+      unsubLlamadaRef.current = [];
+    }
 
     setLlamadaEnCurso(false);
     setMicSilenciado(false);
@@ -577,8 +600,8 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* ELEMENTO AUDIO OCULTO CON REPRODUCCIÓN GARANTIZADA */}
-        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+        {/* ELEMENTO AUDIO OCULTO SIEMPRE PRESENTE EN EL DOM */}
+        <audio ref={remoteAudioRef} autoPlay playsInline />
 
         {/* INTERFAZ FLOTANTE DE LLAMADA / VIDEOLLAMADA */}
         {llamadaEnCurso && (
@@ -775,7 +798,7 @@ function App() {
                                   <div style={{ fontWeight: 'bold' }}>{m.texto}</div>
                                   {!esMio && (
                                     <button 
-                                      onClick={() => responderLlamadaNativa(m.modoLlamada || 'voz')}
+                                      onClick={() => responderLlamadaNativa(m.modoLlamada || 'voz', m.callId)}
                                       style={{ padding: '8px 14px', backgroundColor: '#ffffff', color: '#28a745', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
                                     >
                                       📞 Responder ({m.modoLlamada === 'video' ? 'Video' : 'Voz'})
