@@ -873,13 +873,31 @@ function App() {
             style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
           />
         )}
-        <input type="email" placeholder="Correo electrónico" value={email} onChange={(e) => setEmail(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
-        <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={password} onChange={(e) => setEmail(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
-        <button type="submit" style={{ padding: '10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>{esRegistro ? 'Registrarse' : 'Entrar'}</button>
+        <input 
+          type="email" 
+          placeholder="Correo electrónico" 
+          value={email} 
+          onChange={(e) => setEmail(e.target.value)} 
+          required 
+          style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
+        />
+        <input 
+          type="password" 
+          placeholder="Contraseña (mín. 6 caracteres)" 
+          value={password} 
+          onChange={(e) => setPassword(e.target.value)} 
+          required 
+          style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
+        />
+        <button type="submit" style={{ padding: '10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
+          {esRegistro ? 'Registrarse' : 'Entrar'}
+        </button>
       </form>
       <p style={{ textAlign: 'center', fontSize: '12px', marginTop: '15px' }}>
         {esRegistro ? '¿Ya tienes una cuenta?' : '¿No tienes cuenta?'} {' '}
-        <span onClick={() => { setEsRegistro(!esRegistro); setError(''); }} style={{ color: '#0056b3', cursor: 'pointer', fontWeight: 'bold' }}>{esRegistro ? 'Inicia sesión' : 'Regístrate aquí'}</span>
+        <span onClick={() => { setEsRegistro(!esRegistro); setError(''); }} style={{ color: '#0056b3', cursor: 'pointer', fontWeight: 'bold' }}>
+          {esRegistro ? 'Inicia sesión' : 'Regístrate aquí'}
+        </span>
       </p>
     </div>
   );
