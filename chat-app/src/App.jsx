@@ -15,7 +15,10 @@ import {
   onSnapshot, 
   serverTimestamp,
   doc,
-  setDoc
+  setDoc,
+  deleteDoc,
+  getDocs,
+  writeBatch
 } from 'firebase/firestore';
 
 function App() {
@@ -161,12 +164,11 @@ function App() {
     if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
-  // --- FUNCIONES PARA GRABAR AUDIO (COMPATIBLE CON MÓVILES Y PC) ---
+  // --- FUNCIONES PARA GRABAR AUDIO ---
   const iniciarGrabacionAudio = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // Detectamos qué formato de audio soporta el navegador para que funcione en móviles
       let options = {};
       if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
         options = { mimeType: 'audio/webm;codecs=opus' };
@@ -205,14 +207,13 @@ function App() {
           }
         };
 
-        // Apagamos los micrófonos al terminar
         stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorderRef.current.start();
       setGrabandoAudio(true);
     } catch (err) {
-      alert("No se pudo acceder al micrófono. Revisa los permisos del navegador en el ícono del candado junto a la URL.");
+      alert("No se pudo acceder al micrófono. Revisa los permisos del navegador.");
     }
   };
 
@@ -220,6 +221,39 @@ function App() {
     if (mediaRecorderRef.current && grabandoAudio) {
       mediaRecorderRef.current.stop();
       setGrabandoAudio(false);
+    }
+  };
+
+  // --- FUNCIONES DE ELIMINACIÓN (ADMIN / USUARIO) ---
+  const eliminarMensaje = async (mensajeId) => {
+    if (!chatActivo || !user) return;
+    if (window.confirm("¿Seguro que deseas eliminar este mensaje?")) {
+      try {
+        const chatId = [user.uid, chatActivo.uid].sort().join('_');
+        await deleteDoc(doc(db, 'chats_privados', chatId, 'mensajes', mensajeId));
+      } catch (err) {
+        console.error("Error al eliminar mensaje:", err);
+      }
+    }
+  };
+
+  const vaciarChat = async () => {
+    if (!chatActivo || !user) return;
+    if (window.confirm(`¿Estás seguro de vaciar TODO el chat con ${chatActivo.nombre}? Esta acción borra todos los mensajes.`)) {
+      try {
+        const chatId = [user.uid, chatActivo.uid].sort().join('_');
+        const mensajesRef = collection(db, 'chats_privados', chatId, 'mensajes');
+        const snapshot = await getDocs(mensajesRef);
+        
+        const batch = writeBatch(db);
+        snapshot.docs.forEach((docSnap) => {
+          batch.delete(docSnap.ref);
+        });
+        
+        await batch.commit();
+      } catch (err) {
+        console.error("Error al vaciar chat:", err);
+      }
     }
   };
 
@@ -269,8 +303,19 @@ function App() {
           <div style={{ width: '65%', display: 'flex', flexDirection: 'column', backgroundColor: '#f9f9f9' }}>
             {chatActivo ? (
               <>
-                <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre}</div>
+                  
+                  {/* BOTÓN VACIAR TODO EL CHAT */}
+                  {mensajes.length > 0 && (
+                    <button 
+                      onClick={vaciarChat} 
+                      style={{ padding: '5px 10px', backgroundColor: '#ffc107', color: '#212529', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+                      title="Borrar todos los mensajes del chat"
+                    >
+                      🧹 Vaciar Chat
+                    </button>
+                  )}
                 </div>
 
                 <div style={{ flex: 1, overflowY: 'auto', padding: '15px', display: 'flex', flexDirection: 'column' }}>
@@ -282,7 +327,7 @@ function App() {
                     mensajes.map((m) => {
                       const esMio = m.deUid === user.uid;
                       return (
-                        <div key={m.id} style={{ display: 'flex', justifyContent: esMio ? 'flex-end' : 'flex-start', marginBottom: '8px' }}>
+                        <div key={m.id} style={{ display: 'flex', justifyContent: esMio ? 'flex-end' : 'flex-start', marginBottom: '8px', position: 'relative' }}>
                           <div style={{ 
                             backgroundColor: esMio ? '#0056b3' : '#e9ecef', 
                             color: esMio ? 'white' : '#212529', 
@@ -290,20 +335,42 @@ function App() {
                             borderRadius: '12px', 
                             maxWidth: '85%', 
                             wordBreak: 'break-word',
-                            fontSize: '14px'
+                            fontSize: '14px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
                           }}>
-                            {/* IMAGEN */}
-                            {m.imagenUrl && (
-                              <img src={m.imagenUrl} alt="Adjunto" style={{ width: '100%', borderRadius: '10px', display: 'block' }} />
-                            )}
-                            
-                            {/* AUDIO / MENSAJE DE VOZ */}
-                            {m.audioUrl && (
-                              <audio controls src={m.audioUrl} style={{ maxWidth: '240px', height: '40px' }} />
-                            )}
+                            <div style={{ flex: 1 }}>
+                              {/* IMAGEN */}
+                              {m.imagenUrl && (
+                                <img src={m.imagenUrl} alt="Adjunto" style={{ width: '100%', borderRadius: '10px', display: 'block' }} />
+                              )}
+                              
+                              {/* AUDIO / MENSAJE DE VOZ */}
+                              {m.audioUrl && (
+                                <audio controls src={m.audioUrl} style={{ maxWidth: '220px', height: '40px' }} />
+                              )}
 
-                            {/* TEXTO */}
-                            {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
+                              {/* TEXTO */}
+                              {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
+                            </div>
+
+                            {/* BOTÓN 🗑️ PARA BORRAR CADA MENSAJE */}
+                            <button 
+                              onClick={() => eliminarMensaje(m.id)}
+                              style={{ 
+                                background: 'none', 
+                                border: 'none', 
+                                cursor: 'pointer', 
+                                fontSize: '13px', 
+                                opacity: 0.7,
+                                padding: '2px',
+                                color: esMio ? '#ffdddd' : '#888888'
+                              }}
+                              title="Eliminar mensaje"
+                            >
+                              🗑️
+                            </button>
                           </div>
                         </div>
                       );
