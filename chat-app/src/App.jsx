@@ -148,8 +148,9 @@ function App() {
   }, [mensajes, subiendoImagen, grabandoAudio]);
 
   const lanzarNotificacion = (remitente, texto) => {
-    // Reproducir sonido de notificación
+    // Reproducir sonido de notificación con volumen bajo (10%)
     try {
+      notifAudioRef.current.volume = 0.1; // 👈 Regulado al 10%
       notifAudioRef.current.currentTime = 0;
       notifAudioRef.current.play().catch(() => {});
     } catch (e) {}
@@ -474,7 +475,7 @@ function App() {
                               {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                             </div>
 
-                            {/* INDICADOR DE VISTO (Doble Check Azul cuando leido es true) */}
+                            {/* INDICADOR DE VISTO (Doble Check Verde) */}
                             {esMio && (
                               <span 
                                 style={{ 
