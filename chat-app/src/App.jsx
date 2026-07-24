@@ -68,6 +68,7 @@ function App() {
   const [tipoLlamada, setTipoLlamada] = useState('voz');
   const [micSilenciado, setMicSilenciado] = useState(false);
   const [camApagada, setCamApagada] = useState(false);
+  const [altavozActivado, setAltavozActivado] = useState(true);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -269,6 +270,7 @@ function App() {
   const vincularStreamRemoto = (remoteStream) => {
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.volume = 1.0;
       remoteAudioRef.current.play().catch(() => {});
     }
     if (remoteVideoRef.current) {
@@ -277,7 +279,33 @@ function App() {
     }
   };
 
-  // INICIAR LLAMADA CON ID ÚNICO
+  // FUNCIÓN PARA CAMBIAR ENTRE ALTAVOZ Y AURICULAR
+  const alternarAltavoz = async () => {
+    const nuevoEstado = !altavozActivado;
+    setAltavozActivado(nuevoEstado);
+
+    const elAudio = remoteAudioRef.current;
+    if (!elAudio) return;
+
+    if (typeof elAudio.setSinkId === 'function') {
+      try {
+        const dispositivos = await navigator.mediaDevices.enumerateDevices();
+        const salidasAudio = dispositivos.filter(d => d.kind === 'audiooutput');
+        
+        if (salidasAudio.length > 0) {
+          // Seleccionar dispositivo según estado
+          const destino = nuevoEstado ? (salidasAudio[0]?.deviceId || '') : (salidasAudio[1]?.deviceId || salidasAudio[0]?.deviceId || '');
+          await elAudio.setSinkId(destino);
+        }
+      } catch (e) {
+        console.warn("No se pudo cambiar el dispositivo de salida:", e);
+      }
+    } else {
+      // Ajuste de volumen para simular altavoz si no es compatible
+      elAudio.volume = nuevoEstado ? 1.0 : 0.3;
+    }
+  };
+
   const iniciarLlamadaNativa = async (modo = 'voz') => {
     if (!chatActivo || !user) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
@@ -286,6 +314,7 @@ function App() {
 
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
+    setAltavozActivado(true);
 
     try {
       const stream = await obtenerStreamMultimedia(modo === 'video');
@@ -355,7 +384,6 @@ function App() {
     }
   };
 
-  // RESPONDER LLAMADA USANDO EL CALL_ID ESPECÍFICO
   const responderLlamadaNativa = async (modo = 'voz', callIdParam = null) => {
     if (!chatActivo || !user || !callIdParam) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
@@ -363,6 +391,7 @@ function App() {
 
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
+    setAltavozActivado(true);
 
     try {
       const stream = await obtenerStreamMultimedia(modo === 'video');
@@ -600,8 +629,8 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* ELEMENTO AUDIO OCULTO SIEMPRE PRESENTE EN EL DOM */}
-        <audio ref={remoteAudioRef} autoPlay playsInline />
+        {/* REPRODUCTOR DE AUDIO REMOTO CON SALIDA MULTIMEDIA FORZADA */}
+        <audio ref={remoteAudioRef} autoPlay playsInline controls={false} style={{ position: 'fixed', top: '-9999px' }} />
 
         {/* INTERFAZ FLOTANTE DE LLAMADA / VIDEOLLAMADA */}
         {llamadaEnCurso && (
@@ -626,7 +655,9 @@ function App() {
               )}
 
               {/* CONTROLES DE LLAMADA */}
-              <div style={{ position: 'absolute', bottom: '20px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '15px', padding: '10px' }}>
+              <div style={{ position: 'absolute', bottom: '20px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '12px', padding: '10px' }}>
+                
+                {/* BOTÓN MICRÓFONO */}
                 <button 
                   onClick={alternarMic} 
                   style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: micSilenciado ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
@@ -635,6 +666,16 @@ function App() {
                   {micSilenciado ? '🎙️❌' : '🎙️'}
                 </button>
                 
+                {/* BOTÓN ALTAVOZ (ALTAVOZ vs AURICULAR) */}
+                <button 
+                  onClick={alternarAltavoz} 
+                  style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: altavozActivado ? '#28a745' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
+                  title={altavozActivado ? "Altavoz Activado" : "Cambiar a Altavoz"}
+                >
+                  {altavozActivado ? '🔊' : '🔈'}
+                </button>
+
+                {/* BOTÓN CÁMARA */}
                 {tipoLlamada === 'video' && (
                   <button 
                     onClick={alternarCam} 
@@ -645,6 +686,7 @@ function App() {
                   </button>
                 )}
 
+                {/* BOTÓN COLGAR */}
                 <button 
                   onClick={colgarLlamada} 
                   style={{ padding: '12px 24px', borderRadius: '30px', border: 'none', backgroundColor: '#dc3545', color: 'white', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}
