@@ -235,19 +235,23 @@ function App() {
     }
   };
 
-  // --- LÓGICA DE LLAMADA NATIVA WEBRTC ADAPTATIVA ---
+  // --- LÓGICA DE CAPTURA ROBUSTA PARA MÓVILES Y NAVEGADORES DE ESCRITORIO ---
   const obtenerStreamMultimedia = async () => {
+    // 1. Obtener micrófono (prioridad esencial)
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+    // 2. Intentar adjuntar la cámara sin bloquear si falla
     try {
-      // Intentar pedir cámara y micrófono primero
-      return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    } catch (err) {
-      try {
-        // Si no hay cámara o falla el video, pedir SOLO micrófono (Llamada de voz)
-        return await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-      } catch (errAudio) {
-        throw errAudio;
+      const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const videoTrack = videoStream.getVideoTracks()[0];
+      if (videoTrack) {
+        stream.addTrack(videoTrack);
       }
+    } catch (eVideo) {
+      console.warn("Cámara no disponible, iniciando llamada solo de voz:", eVideo);
     }
+
+    return stream;
   };
 
   const iniciarLlamadaNativa = async () => {
@@ -313,7 +317,7 @@ function App() {
       });
 
     } catch (err) {
-      alert("Permiso denegado o no se detectó micrófono/cámara. Revisa los permisos del navegador en la barra de direcciones.");
+      alert("Para realizar la llamada, debes autorizar el uso del micrófono en el navegador.");
       colgarLlamada();
     }
   };
@@ -374,7 +378,7 @@ function App() {
       });
 
     } catch (err) {
-      alert("Permiso denegado para el micrófono o cámara.");
+      alert("Para responder la llamada, debes permitir el acceso al micrófono.");
       colgarLlamada();
     }
   };
@@ -870,7 +874,7 @@ function App() {
           />
         )}
         <input type="email" placeholder="Correo electrónico" value={email} onChange={(e) => setEmail(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
-        <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
+        <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={password} onChange={(e) => setEmail(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
         <button type="submit" style={{ padding: '10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>{esRegistro ? 'Registrarse' : 'Entrar'}</button>
       </form>
       <p style={{ textAlign: 'center', fontSize: '12px', marginTop: '15px' }}>
