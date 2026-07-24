@@ -32,7 +32,12 @@ function App() {
   
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   
-  // Referencias para las dos opciones de imagen
+  // ESTADOS Y REFERENCIAS PARA GRABAR AUDIO
+  const [grabandoAudio, setGrabandoAudio] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
+  // Referencias de inputs y scroll
   const galleryInputRef = useRef(null);
   const cameraInputRef = useRef(null);
   const scrollRef = useRef(null);
@@ -86,7 +91,7 @@ function App() {
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [mensajes, subiendoImagen]);
+  }, [mensajes, subiendoImagen, grabandoAudio]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -117,7 +122,6 @@ function App() {
     }
   };
 
-  // Función general para procesar y subir cualquier imagen seleccionada
   const subirImagenAPI = async (file) => {
     if (!file || !chatActivo) return;
 
@@ -155,6 +159,54 @@ function App() {
 
     if (galleryInputRef.current) galleryInputRef.current.value = '';
     if (cameraInputRef.current) cameraInputRef.current.value = '';
+  };
+
+  // --- FUNCIONES PARA GRABAR AUDIO ---
+  const iniciarGrabacionAudio = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorderRef.current = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorderRef.current.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = async () => {
+          const base64Audio = reader.result;
+          if (chatActivo && base64Audio) {
+            const chatId = [user.uid, chatActivo.uid].sort().join('_');
+            await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
+              deUid: user.uid,
+              paraUid: chatActivo.uid,
+              texto: '',
+              audioUrl: base64Audio,
+              creadoEn: serverTimestamp()
+            });
+          }
+        };
+        // Detener micrófono
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorderRef.current.start();
+      setGrabandoAudio(true);
+    } catch (err) {
+      alert("No se pudo acceder al micrófono. Verifica los permisos de tu navegador.");
+    }
+  };
+
+  const detenerGrabacionAudio = () => {
+    if (mediaRecorderRef.current && grabandoAudio) {
+      mediaRecorderRef.current.stop();
+      setGrabandoAudio(false);
+    }
   };
 
   if (user) {
@@ -220,15 +272,23 @@ function App() {
                           <div style={{ 
                             backgroundColor: esMio ? '#0056b3' : '#e9ecef', 
                             color: esMio ? 'white' : '#212529', 
-                            padding: m.imagenUrl ? '4px' : '8px 12px', 
+                            padding: m.imagenUrl || m.audioUrl ? '6px' : '8px 12px', 
                             borderRadius: '12px', 
-                            maxWidth: '75%', 
+                            maxWidth: '85%', 
                             wordBreak: 'break-word',
                             fontSize: '14px'
                           }}>
+                            {/* IMAGEN */}
                             {m.imagenUrl && (
                               <img src={m.imagenUrl} alt="Adjunto" style={{ width: '100%', borderRadius: '10px', display: 'block' }} />
                             )}
+                            
+                            {/* AUDIO / MENSAJE DE VOZ */}
+                            {m.audioUrl && (
+                              <audio controls src={m.audioUrl} style={{ maxWidth: '240px', height: '40px' }} />
+                            )}
+
+                            {/* TEXTO */}
                             {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                           </div>
                         </div>
@@ -245,57 +305,66 @@ function App() {
 
                 <form onSubmit={handleEnviarMensaje} style={{ display: 'flex', gap: '6px', padding: '10px', backgroundColor: '#f0f2f5', alignItems: 'center' }}>
                   
-                  {/* 1. INPUT OCULTO PARA GALERÍA/ARCHIVOS */}
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    ref={galleryInputRef} 
-                    onChange={(e) => subirImagenAPI(e.target.files[0])} 
-                    style={{ display: 'none' }} 
-                  />
-
-                  {/* 2. INPUT OCULTO PARA CÁMARA DIRECTA */}
-                  <input 
-                    type="file" 
-                    accept="image/*" 
-                    capture="environment" 
-                    ref={cameraInputRef} 
-                    onChange={(e) => subirImagenAPI(e.target.files[0])} 
-                    style={{ display: 'none' }} 
-                  />
+                  <input type="file" accept="image/*" ref={galleryInputRef} onChange={(e) => subirImagenAPI(e.target.files[0])} style={{ display: 'none' }} />
+                  <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} onChange={(e) => subirImagenAPI(e.target.files[0])} style={{ display: 'none' }} />
                   
-                  {/* BOTÓN CÁMARA (Abre la cámara del celular inmediatamente) */}
+                  {/* CÁMARA */}
                   <button 
                     type="button" 
                     onClick={() => cameraInputRef.current.click()} 
-                    disabled={subiendoImagen}
+                    disabled={subiendoImagen || grabandoAudio}
                     style={{ padding: '8px 10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '15px' }}
-                    title="Tomar Foto con Cámara"
+                    title="Tomar Foto"
                   >
                     📷
                   </button>
 
-                  {/* BOTÓN GALERÍA (Abre el explorador de archivos / fotos guardadas) */}
+                  {/* GALERÍA */}
                   <button 
                     type="button" 
                     onClick={() => galleryInputRef.current.click()} 
-                    disabled={subiendoImagen}
+                    disabled={subiendoImagen || grabandoAudio}
                     style={{ padding: '8px 10px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '15px' }}
                     title="Seleccionar de Galería"
                   >
                     🖼️
                   </button>
 
-                  <input 
-                    type="text" 
-                    placeholder="Escribe un mensaje..." 
-                    value={nuevoMensaje} 
-                    onChange={(e) => setNuevoMensaje(e.target.value)} 
-                    style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #ccc', fontSize: '14px', outline: 'none' }}
-                  />
-                  <button type="submit" style={{ padding: '10px 18px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
-                    Enviar
-                  </button>
+                  {/* BOTÓN DE MICRÓFONO / GRABAR AUDIO */}
+                  {!grabandoAudio ? (
+                    <button 
+                      type="button" 
+                      onClick={iniciarGrabacionAudio} 
+                      disabled={subiendoImagen}
+                      style={{ padding: '8px 10px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '15px' }}
+                      title="Grabar Nota de Voz"
+                    >
+                      🎤
+                    </button>
+                  ) : (
+                    <button 
+                      type="button" 
+                      onClick={detenerGrabacionAudio} 
+                      style={{ padding: '8px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', animation: 'pulse 1s infinite' }}
+                    >
+                      🛑 Detener y Enviar
+                    </button>
+                  )}
+
+                  {!grabandoAudio && (
+                    <>
+                      <input 
+                        type="text" 
+                        placeholder="Escribe un mensaje..." 
+                        value={nuevoMensaje} 
+                        onChange={(e) => setNuevoMensaje(e.target.value)} 
+                        style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #ccc', fontSize: '14px', outline: 'none' }}
+                      />
+                      <button type="submit" style={{ padding: '10px 18px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        Enviar
+                      </button>
+                    </>
+                  )}
                 </form>
               </>
             ) : (
