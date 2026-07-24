@@ -22,12 +22,14 @@ import {
   updateDoc
 } from 'firebase/firestore';
 
+// Servidores STUN públicos de Google
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' }
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
   ]
 };
 
@@ -240,18 +242,26 @@ function App() {
     }
   };
 
-  // --- LÓGICA DE CAPTURA MULTIMEDIA (AUDIO / VIDEO) ---
   const obtenerStreamMultimedia = async (modoVideo) => {
-    const constraints = {
+    return await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true
       },
       video: modoVideo ? { facingMode: 'user' } : false
-    };
+    });
+  };
 
-    return await navigator.mediaDevices.getUserMedia(constraints);
+  const vincularStreamRemoto = (remoteStream) => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.play().catch(e => console.log("Error autostart audio:", e));
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(e => console.log("Error autostart video:", e));
+    }
   };
 
   const iniciarLlamadaNativa = async (modo = 'voz') => {
@@ -281,16 +291,7 @@ function App() {
       const remoteStream = new MediaStream();
       pc.ontrack = (event) => {
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        
-        // Forzar asignación de stream de audio y video
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
-          remoteAudioRef.current.play().catch(() => {});
-        }
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          remoteVideoRef.current.play().catch(() => {});
-        }
+        vincularStreamRemoto(remoteStream);
       };
 
       const offer = await pc.createOffer();
@@ -312,7 +313,7 @@ function App() {
         }
       });
 
-      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), (snap) => {
+      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
@@ -331,7 +332,7 @@ function App() {
       });
 
     } catch (err) {
-      alert(`No se pudo iniciar la llamada: ${err.message || 'Permiso de micrófono/cámara denegado.'}`);
+      alert(`No se pudo iniciar la llamada: ${err.message || 'Permiso denegado.'}`);
       colgarLlamada();
     }
   };
@@ -363,15 +364,7 @@ function App() {
       const remoteStream = new MediaStream();
       pc.ontrack = (event) => {
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
-          remoteAudioRef.current.play().catch(() => {});
-        }
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          remoteVideoRef.current.play().catch(() => {});
-        }
+        vincularStreamRemoto(remoteStream);
       };
 
       const llamadaSnap = await getDocs(collection(db, 'chats_privados', chatId, 'llamada_activa'));
@@ -584,10 +577,10 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* ELEMENTO AUDIO OCULTO PARA GARANTIZAR REPRODUCCIÓN EN LLAMADA DE VOZ */}
-        <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
+        {/* ELEMENTO AUDIO OCULTO CON REPRODUCCIÓN GARANTIZADA */}
+        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
 
-        {/* INTERFAZ FLOTANTE NATIVA DE LLAMADA / VIDEOLLAMADA */}
+        {/* INTERFAZ FLOTANTE DE LLAMADA / VIDEOLLAMADA */}
         {llamadaEnCurso && (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
             <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative', alignItems: 'center', justifyContent: 'center' }}>
@@ -716,7 +709,6 @@ function App() {
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre || chatActivo.email.split('@')[0]}</div>
                   
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    {/* BOTÓN DE LLAMADA DE VOZ */}
                     <button 
                       onClick={() => iniciarLlamadaNativa('voz')}
                       style={{ padding: '6px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
@@ -725,7 +717,6 @@ function App() {
                       📞 Voz
                     </button>
 
-                    {/* BOTÓN DE VIDEOLLAMADA */}
                     <button 
                       onClick={() => iniciarLlamadaNativa('video')}
                       style={{ padding: '6px 10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
