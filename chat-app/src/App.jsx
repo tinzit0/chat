@@ -39,6 +39,9 @@ function App() {
   
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   
+  // ESTADO PARA LA LLAMADA ACTIVA
+  const [urlLlamadaActiva, setUrlLlamadaActiva] = useState(null);
+
   // ESTADOS Y REFERENCIAS PARA GRABAR AUDIO
   const [grabandoAudio, setGrabandoAudio] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -122,7 +125,6 @@ function App() {
         const data = docSnap.data();
         docs.push({ id: docSnap.id, ...data });
 
-        // Marcar como VISTO si el mensaje no es mío y no estaba leído
         if (data.deUid !== user.uid && !data.leido) {
           updateDoc(doc(db, 'chats_privados', chatId, 'mensajes', docSnap.id), {
             leido: true
@@ -130,11 +132,10 @@ function App() {
         }
       });
 
-      // Si llega un nuevo mensaje del otro usuario, hacer sonar notificación
       if (docs.length > mensajes.length && mensajes.length > 0) {
         const ultimoMensaje = docs[docs.length - 1];
         if (ultimoMensaje.deUid !== user.uid) {
-          lanzarNotificacion(chatActivo.nombre || 'Nuevo Mensaje', ultimoMensaje.texto || '📷 Foto o 🎤 Audio');
+          lanzarNotificacion(chatActivo.nombre || 'Nuevo Mensaje', ultimoMensaje.esLlamada ? '📞 Te están llamando...' : (ultimoMensaje.texto || '📷 Foto o 🎤 Audio'));
         }
       }
 
@@ -148,14 +149,12 @@ function App() {
   }, [mensajes, subiendoImagen, grabandoAudio]);
 
   const lanzarNotificacion = (remitente, texto) => {
-    // Reproducir sonido de notificación con volumen bajo (10%)
     try {
-      notifAudioRef.current.volume = 0.1; // 👈 Regulado al 10%
+      notifAudioRef.current.volume = 0.1;
       notifAudioRef.current.currentTime = 0;
       notifAudioRef.current.play().catch(() => {});
     } catch (e) {}
 
-    // Notificación en pantalla si la ventana no está visible
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
       new Notification(`💬 ${remitente}`, {
         body: texto
@@ -214,6 +213,33 @@ function App() {
       setNuevoMensaje('');
     } catch (err) {
       console.error("Error enviando mensaje:", err);
+    }
+  };
+
+  // FUNCION PARA INICIAR UNA LLAMADA
+  const iniciarLlamada = async () => {
+    if (!chatActivo || !user) return;
+
+    // Generar un id de sala único y aleatorio para este chat
+    const chatId = [user.uid, chatActivo.uid].sort().join('_');
+    const salaId = `michat-${chatId}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const urlJitsi = `https://meet.jit.si/${salaId}`;
+
+    try {
+      await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
+        deUid: user.uid,
+        paraUid: chatActivo.uid,
+        texto: '📞 Inició una llamada de voz/video.',
+        esLlamada: true,
+        llamadaUrl: urlJitsi,
+        leido: false,
+        creadoEn: serverTimestamp()
+      });
+
+      // Abrir la llamada para quien la inicia
+      setUrlLlamadaActiva(urlJitsi);
+    } catch (err) {
+      console.error("Error al iniciar llamada:", err);
     }
   };
 
@@ -353,6 +379,29 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
+        {/* MODAL / VENTANA DE LLAMADA */}
+        {urlLlamadaActiva && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
+            <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '10px 15px', backgroundColor: '#0056b3', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 'bold' }}>📞 Llamada en curso</span>
+                <button 
+                  onClick={() => setUrlLlamadaActiva(null)} 
+                  style={{ padding: '6px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+                >
+                  ✕ Salir de la llamada
+                </button>
+              </div>
+              <iframe 
+                src={urlLlamadaActiva} 
+                allow="camera; microphone; display-capture; autoplay" 
+                style={{ width: '100%', height: '100%', border: 'none' }}
+                title="Llamada Jitsi"
+              />
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0056b3', color: 'white', padding: '12px 20px', borderRadius: '8px 8px 0 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h3 style={{ margin: 0 }}>💬 mi chat</h3>
@@ -428,15 +477,26 @@ function App() {
                 <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre || chatActivo.email.split('@')[0]}</div>
                   
-                  {mensajes.length > 0 && (
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {/* BOTÓN INICIAR LLAMADA */}
                     <button 
-                      onClick={vaciarChat} 
-                      style={{ padding: '5px 10px', backgroundColor: '#ffc107', color: '#212529', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
-                      title="Borrar todos los mensajes del chat"
+                      onClick={iniciarLlamada}
+                      style={{ padding: '6px 12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      title="Llamar a este usuario"
                     >
-                      🧹 Vaciar Chat
+                      📞 Llamar
                     </button>
-                  )}
+
+                    {mensajes.length > 0 && (
+                      <button 
+                        onClick={vaciarChat} 
+                        style={{ padding: '6px 10px', backgroundColor: '#ffc107', color: '#212529', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+                        title="Borrar todos los mensajes del chat"
+                      >
+                        🧹
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div style={{ flex: 1, overflowY: 'auto', padding: '15px', display: 'flex', flexDirection: 'column' }}>
@@ -452,8 +512,8 @@ function App() {
                       return (
                         <div key={m.id} style={{ display: 'flex', justifyContent: esMio ? 'flex-end' : 'flex-start', marginBottom: '8px', position: 'relative' }}>
                           <div style={{ 
-                            backgroundColor: esMio ? '#0056b3' : '#e9ecef', 
-                            color: esMio ? 'white' : '#212529', 
+                            backgroundColor: m.esLlamada ? '#28a745' : (esMio ? '#0056b3' : '#e9ecef'), 
+                            color: m.esLlamada || esMio ? 'white' : '#212529', 
                             padding: m.imagenUrl || m.audioUrl ? '6px' : '8px 12px', 
                             borderRadius: '12px', 
                             maxWidth: '85%', 
@@ -472,10 +532,23 @@ function App() {
                                 <audio controls src={m.audioUrl} style={{ maxWidth: '220px', height: '40px' }} />
                               )}
 
-                              {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
+                              {/* TARJETA / BOTÓN DE LLAMADA RECIBIDA */}
+                              {m.esLlamada ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' }}>
+                                  <div style={{ fontWeight: 'bold' }}>{m.texto}</div>
+                                  <button 
+                                    onClick={() => setUrlLlamadaActiva(m.llamadaUrl)}
+                                    style={{ padding: '8px 14px', backgroundColor: '#ffffff', color: '#28a745', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
+                                  >
+                                    📞 Entrar a la llamada
+                                  </button>
+                                </div>
+                              ) : (
+                                m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>
+                              )}
                             </div>
 
-                            {/* INDICADOR DE VISTO (Doble Check Verde) */}
+                            {/* INDICADOR DE VISTO */}
                             {esMio && (
                               <span 
                                 style={{ 
@@ -501,7 +574,7 @@ function App() {
                                   fontSize: '13px', 
                                   opacity: 0.7,
                                   padding: '2px',
-                                  color: esMio ? '#ffdddd' : '#888888'
+                                  color: esMio || m.esLlamada ? '#ffdddd' : '#888888'
                                 }}
                                 title="Eliminar mensaje"
                               >
