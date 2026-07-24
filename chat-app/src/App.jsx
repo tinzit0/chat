@@ -235,18 +235,21 @@ function App() {
     }
   };
 
+  // --- OBTENCIÓN DE MULTIMEDIA OPTIMIZADA PARA MÓVILES ---
   const obtenerStreamMultimedia = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     try {
-      const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const videoTrack = videoStream.getVideoTracks()[0];
-      if (videoTrack) {
-        stream.addTrack(videoTrack);
-      }
-    } catch (eVideo) {
-      console.warn("Cámara no disponible, iniciando llamada solo de voz:", eVideo);
+      // Intento 1: Pedir Micrófono con parámetros estándar para móvil/web
+      return await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true
+        }, 
+        video: false 
+      });
+    } catch (eMic) {
+      console.error("Error directo de micrófono:", eMic);
+      throw eMic;
     }
-    return stream;
   };
 
   const iniciarLlamadaNativa = async () => {
@@ -258,6 +261,17 @@ function App() {
       const stream = await obtenerStreamMultimedia();
       localStreamRef.current = stream;
       setLlamadaEnCurso(true);
+
+      // Intentar agregar cámara de forma silenciosa si existe
+      try {
+        const videoStream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'user' } 
+        });
+        const vTrack = videoStream.getVideoTracks()[0];
+        if (vTrack) stream.addTrack(vTrack);
+      } catch (eVid) {
+        console.log("Cámara no disponible, continuando solo con voz");
+      }
 
       setTimeout(() => {
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
@@ -312,7 +326,7 @@ function App() {
       });
 
     } catch (err) {
-      alert("Para realizar la llamada, debes autorizar el uso del micrófono en el navegador.");
+      alert(`No se pudo iniciar la llamada: ${err.name || err.message || 'Error de micrófono'}`);
       colgarLlamada();
     }
   };
@@ -326,6 +340,14 @@ function App() {
       const stream = await obtenerStreamMultimedia();
       localStreamRef.current = stream;
       setLlamadaEnCurso(true);
+
+      try {
+        const videoStream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'user' } 
+        });
+        const vTrack = videoStream.getVideoTracks()[0];
+        if (vTrack) stream.addTrack(vTrack);
+      } catch (eVid) {}
 
       setTimeout(() => {
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
@@ -373,7 +395,7 @@ function App() {
       });
 
     } catch (err) {
-      alert("Para responder la llamada, debes permitir el acceso al micrófono.");
+      alert(`No se pudo responder la llamada: ${err.name || err.message}`);
       colgarLlamada();
     }
   };
