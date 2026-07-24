@@ -47,6 +47,9 @@ function App() {
 
   const IMGBB_API_KEY = '2447ec54156a52c2b609cc1ea5d177d8';
 
+  // VERIFICACIÓN DE ADMINISTRADOR
+  const ES_ADMIN = user?.email === 'martinub250@gmail.com';
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (usuarioActual) => {
       setUser(usuarioActual);
@@ -224,7 +227,7 @@ function App() {
     }
   };
 
-  // --- FUNCIONES DE ELIMINACIÓN (ADMIN / USUARIO) ---
+  // --- FUNCIONES DE ELIMINACIÓN ---
   const eliminarMensaje = async (mensajeId) => {
     if (!chatActivo || !user) return;
     if (window.confirm("¿Seguro que deseas eliminar este mensaje?")) {
@@ -239,7 +242,7 @@ function App() {
 
   const vaciarChat = async () => {
     if (!chatActivo || !user) return;
-    if (window.confirm(`¿Estás seguro de vaciar TODO el chat con ${chatActivo.nombre}? Esta acción borra todos los mensajes.`)) {
+    if (window.confirm(`¿Estás seguro de vaciar TODO el chat con ${chatActivo.nombre}? Esta acción borrará todos los mensajes.`)) {
       try {
         const chatId = [user.uid, chatActivo.uid].sort().join('_');
         const mensajesRef = collection(db, 'chats_privados', chatId, 'mensajes');
@@ -262,7 +265,14 @@ function App() {
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0056b3', color: 'white', padding: '12px 20px', borderRadius: '8px 8px 0 0' }}>
-          <h3 style={{ margin: 0 }}>💬 mi chat</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h3 style={{ margin: 0 }}>💬 mi chat</h3>
+            {ES_ADMIN && (
+              <span style={{ backgroundColor: '#ffc107', color: '#000', fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                ADMIN
+              </span>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span style={{ fontSize: '13px', fontWeight: 'bold' }}>👤 {user.email.split('@')[0]}</span>
             <button 
@@ -306,7 +316,7 @@ function App() {
                 <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre}</div>
                   
-                  {/* BOTÓN VACIAR TODO EL CHAT */}
+                  {/* BOTÓN VACIAR TODO EL CHAT (SI HAY MENSAJES) */}
                   {mensajes.length > 0 && (
                     <button 
                       onClick={vaciarChat} 
@@ -326,6 +336,9 @@ function App() {
                   ) : (
                     mensajes.map((m) => {
                       const esMio = m.deUid === user.uid;
+                      // PUEDE ELIMINAR SI ES ADMIN O SI ES EL DUEÑO DEL MENSAJE
+                      const puedeEliminar = ES_ADMIN || esMio;
+
                       return (
                         <div key={m.id} style={{ display: 'flex', justifyContent: esMio ? 'flex-end' : 'flex-start', marginBottom: '8px', position: 'relative' }}>
                           <div style={{ 
@@ -355,22 +368,24 @@ function App() {
                               {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                             </div>
 
-                            {/* BOTÓN 🗑️ PARA BORRAR CADA MENSAJE */}
-                            <button 
-                              onClick={() => eliminarMensaje(m.id)}
-                              style={{ 
-                                background: 'none', 
-                                border: 'none', 
-                                cursor: 'pointer', 
-                                fontSize: '13px', 
-                                opacity: 0.7,
-                                padding: '2px',
-                                color: esMio ? '#ffdddd' : '#888888'
-                              }}
-                              title="Eliminar mensaje"
-                            >
-                              🗑️
-                            </button>
+                            {/* BOTÓN 🗑️ PARA BORRAR EL MENSAJE (ADMIN O AUTOR) */}
+                            {puedeEliminar && (
+                              <button 
+                                onClick={() => eliminarMensaje(m.id)}
+                                style={{ 
+                                  background: 'none', 
+                                  border: 'none', 
+                                  cursor: 'pointer', 
+                                  fontSize: '13px', 
+                                  opacity: 0.7,
+                                  padding: '2px',
+                                  color: esMio ? '#ffdddd' : '#888888'
+                                }}
+                                title="Eliminar mensaje"
+                              >
+                                🗑️
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
