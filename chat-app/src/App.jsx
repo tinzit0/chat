@@ -161,21 +161,34 @@ function App() {
     if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
-  // --- FUNCIONES PARA GRABAR AUDIO ---
+  // --- FUNCIONES PARA GRABAR AUDIO (COMPATIBLE CON MÓVILES Y PC) ---
   const iniciarGrabacionAudio = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorderRef.current = new MediaRecorder(stream);
+
+      // Detectamos qué formato de audio soporta el navegador para que funcione en móviles
+      let options = {};
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        options = { mimeType: 'audio/webm;codecs=opus' };
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        options = { mimeType: 'audio/mp4' };
+      } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+        options = { mimeType: 'audio/ogg' };
+      }
+
+      mediaRecorderRef.current = new MediaRecorder(stream, options);
       audioChunksRef.current = [];
 
       mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
       mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const mimeTypeUsado = mediaRecorderRef.current.mimeType || 'audio/webm';
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeTypeUsado });
+        
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
         reader.onloadend = async () => {
@@ -191,14 +204,15 @@ function App() {
             });
           }
         };
-        // Detener micrófono
+
+        // Apagamos los micrófonos al terminar
         stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorderRef.current.start();
       setGrabandoAudio(true);
     } catch (err) {
-      alert("No se pudo acceder al micrófono. Verifica los permisos de tu navegador.");
+      alert("No se pudo acceder al micrófono. Revisa los permisos del navegador en el ícono del candado junto a la URL.");
     }
   };
 
@@ -345,7 +359,7 @@ function App() {
                     <button 
                       type="button" 
                       onClick={detenerGrabacionAudio} 
-                      style={{ padding: '8px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', animation: 'pulse 1s infinite' }}
+                      style={{ padding: '8px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
                     >
                       🛑 Detener y Enviar
                     </button>
