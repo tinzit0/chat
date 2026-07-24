@@ -22,6 +22,14 @@ import {
   updateDoc
 } from 'firebase/firestore';
 
+// Servidores STUN gratuitos de Google para negociar conexiones WebRTC tras NAT/Routers
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+};
+
 function App() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState('');
@@ -39,10 +47,16 @@ function App() {
   
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   
-  // ESTADO Y REF PARA LA LLAMADA ACTIVA DENTRO DEL NAVEGADOR
-  const [salaLlamadaActiva, setSalaLlamadaActiva] = useState(null);
-  const jitsiContainerRef = useRef(null);
-  const jitsiApiRef = useRef(null);
+  // ESTADOS Y REFERENCIAS PARA LLAMADA WEBRTC PROPIA
+  const [llamadaEnCurso, setLlamadaEnCurso] = useState(false);
+  const [micSilenciado, setMicSilenciado] = useState(false);
+  const [camApagada, setCamApagada] = useState(false);
+
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const unsubLlamadaRef = useRef(null);
 
   // ESTADOS Y REFERENCIAS PARA GRABAR AUDIO
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -63,13 +77,7 @@ function App() {
   // VERIFICACIÓN DE ADMINISTRADOR
   const ES_ADMIN = user?.email === 'martinub250@gmail.com';
 
-  // Cargar SDK de Jitsi Meet externamente para uso in-app
   useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://meet.jit.si/external_api.js';
-    script.async = true;
-    document.body.appendChild(script);
-
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
@@ -143,7 +151,10 @@ function App() {
       if (docs.length > mensajes.length && mensajes.length > 0) {
         const ultimoMensaje = docs[docs.length - 1];
         if (ultimoMensaje.deUid !== user.uid) {
-          lanzarNotificacion(chatActivo.nombre || 'Nuevo Mensaje', ultimoMensaje.esLlamada ? '📞 Te están llamando...' : (ultimoMensaje.texto || '📷 Foto o 🎤 Audio'));
+          lanzarNotificacion(
+            chatActivo.nombre || 'Nuevo Mensaje', 
+            ultimoMensaje.esLlamada ? '📞 Te están llamando...' : (ultimoMensaje.texto || '📷 Foto o 🎤 Audio')
+          );
         }
       }
 
@@ -151,44 +162,6 @@ function App() {
     });
     return () => unsubscribe();
   }, [user, chatActivo, mensajes.length]);
-
-  // Inicializar Jitsi dentro del contenedor cuando hay una llamada activa
-  useEffect(() => {
-    if (salaLlamadaActiva && window.JitsiMeetExternalAPI && jitsiContainerRef.current) {
-      const domain = 'meet.jit.si';
-      const options = {
-        roomName: salaLlamadaActiva,
-        width: '100%',
-        height: '100%',
-        parentNode: jitsiContainerRef.current,
-        userInfo: {
-          displayName: nuevoNombreInput || user?.email?.split('@')[0] || 'Usuario'
-        },
-        configOverwrite: {
-          prejoinPageEnabled: false,
-          disableDeepLinking: true // Desactiva abrir/descargar la app externa
-        },
-        interfaceConfigOverwrite: {
-          MOBILE_APP_PROMO: false
-        }
-      };
-
-      jitsiApiRef.current = new window.JitsiMeetExternalAPI(domain, options);
-
-      // Al colgar desde la interfaz de Jitsi, cerrar la ventana flotante
-      jitsiApiRef.current.addEventListener('videoConferenceLeft', () => {
-        cerrarLlamada();
-      });
-    }
-  }, [salaLlamadaActiva]);
-
-  const cerrarLlamada = () => {
-    if (jitsiApiRef.current) {
-      jitsiApiRef.current.dispose();
-      jitsiApiRef.current = null;
-    }
-    setSalaLlamadaActiva(null);
-  };
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -262,27 +235,178 @@ function App() {
     }
   };
 
-  // INICIAR LLAMADA DENTRO DE LA APP
-  const iniciarLlamada = async () => {
+  // --- LÓGICA DE LLAMADA NATIVA WEBRTC ---
+  const iniciarLlamadaNativa = async () => {
     if (!chatActivo || !user) return;
-
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
-    const salaNombre = `michatapp_${chatId}_${Math.floor(1000 + Math.random() * 9000)}`;
+    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
 
     try {
+      // 1. Obtener audio/video local
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
+      setLlamadaEnCurso(true);
+
+      setTimeout(() => {
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      }, 300);
+
+      // 2. Crear conexión RTCPeerConnection
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+      peerConnectionRef.current = pc;
+
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      const remoteStream = new MediaStream();
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+
+      pc.ontrack = (event) => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+      };
+
+      // 3. Generar Oferta WebRTC
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid });
+
+      // Candiadatos ICE locales
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), e.candidate.toJSON());
+        }
+      };
+
+      // 4. Escuchar Respuesta (Answer) del receptor
+      unsubLlamadaRef.current = onSnapshot(llamadaDocRef, (snap) => {
+        const data = snap.data();
+        if (pc.remoteDescription === null && data?.answer) {
+          const answer = new RTCSessionDescription(data.answer);
+          pc.setRemoteDescription(answer);
+        }
+      });
+
+      // Escuchar candidatos ICE remotos
+      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), (snap) => {
+        snap.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+          }
+        });
+      });
+
+      // Enviar mensaje de invitación al chat
       await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
         deUid: user.uid,
         paraUid: chatActivo.uid,
-        texto: '📞 Inició una llamada en vivo.',
+        texto: '📞 Inició una videollamada nativa.',
         esLlamada: true,
-        salaNombre: salaNombre,
         leido: false,
         creadoEn: serverTimestamp()
       });
 
-      setSalaLlamadaActiva(salaNombre);
     } catch (err) {
-      console.error("Error al iniciar llamada:", err);
+      alert("No se pudo acceder a la cámara o micrófono.");
+      colgarLlamada();
+    }
+  };
+
+  const responderLlamadaNativa = async () => {
+    if (!chatActivo || !user) return;
+    const chatId = [user.uid, chatActivo.uid].sort().join('_');
+    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
+      setLlamadaEnCurso(true);
+
+      setTimeout(() => {
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      }, 300);
+
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+      peerConnectionRef.current = pc;
+
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      const remoteStream = new MediaStream();
+      pc.ontrack = (event) => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+      };
+
+      const llamadaSnap = await getDocs(collection(db, 'chats_privados', chatId, 'llamada_activa'));
+      let offerData = null;
+      llamadaSnap.forEach(d => { if (d.id === 'conexion') offerData = d.data().offer; });
+
+      if (!offerData) {
+        alert("La llamada ha finalizado.");
+        return;
+      }
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offerData));
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      await updateDoc(llamadaDocRef, { answer: { type: answer.type, sdp: answer.sdp } });
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), e.candidate.toJSON());
+        }
+      };
+
+      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), (snap) => {
+        snap.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+          }
+        });
+      });
+
+    } catch (err) {
+      alert("Error al responder la llamada.");
+      colgarLlamada();
+    }
+  };
+
+  const colgarLlamada = () => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+
+    if (unsubLlamadaRef.current) unsubLlamadaRef.current();
+
+    setLlamadaEnCurso(false);
+    setMicSilenciado(false);
+    setCamApagada(false);
+  };
+
+  const alternarMic = () => {
+    if (localStreamRef.current) {
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setMicSilenciado(!audioTrack.enabled);
+      }
+    }
+  };
+
+  const alternarCam = () => {
+    if (localStreamRef.current) {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setCamApagada(!videoTrack.enabled);
+      }
     }
   };
 
@@ -422,20 +546,40 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* VENTANA EMBEBIDA 100% EN EL NAVEGADOR PARA LA LLAMADA */}
-        {salaLlamadaActiva && (
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px' }}>
-            <div style={{ width: '100%', maxWidth: '800px', height: '85vh', backgroundColor: '#000', borderRadius: '12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              <div style={{ padding: '10px 15px', backgroundColor: '#0056b3', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontWeight: 'bold', fontSize: '14px' }}>📞 Llamada en curso</span>
+        {/* INTERFAZ FLOTANTE NATIVA DE LLAMADA WEBRTC */}
+        {llamadaEnCurso && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.92)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
+            <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+              
+              {/* VIDEO REMOTO (Grande) */}
+              <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' }} />
+              
+              {/* VIDEO LOCAL (Miniatura flotante) */}
+              <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333' }} />
+
+              {/* CONTROLES NATIVOS DE LLAMADA */}
+              <div style={{ position: 'absolute', bottom: '15px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '15px', padding: '10px' }}>
                 <button 
-                  onClick={cerrarLlamada} 
-                  style={{ padding: '6px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+                  onClick={alternarMic} 
+                  style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: micSilenciado ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
+                  title={micSilenciado ? "Activar Micrófono" : "Silenciar Micrófono"}
                 >
-                  ✕ Salir
+                  {micSilenciado ? '🎙️❌' : '🎙️'}
+                </button>
+                <button 
+                  onClick={alternarCam} 
+                  style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: camApagada ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
+                  title={camApagada ? "Encender Cámara" : "Apagar Cámara"}
+                >
+                  {camApagada ? '📷❌' : '📷'}
+                </button>
+                <button 
+                  onClick={colgarLlamada} 
+                  style={{ padding: '12px 24px', borderRadius: '30px', border: 'none', backgroundColor: '#dc3545', color: 'white', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}
+                >
+                  🛑 Colgar
                 </button>
               </div>
-              <div ref={jitsiContainerRef} style={{ width: '100%', flex: 1, backgroundColor: '#000' }} />
             </div>
           </div>
         )}
@@ -517,7 +661,7 @@ function App() {
                   
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <button 
-                      onClick={iniciarLlamada}
+                      onClick={iniciarLlamadaNativa}
                       style={{ padding: '6px 12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
                       title="Llamar a este usuario"
                     >
@@ -572,12 +716,14 @@ function App() {
                               {m.esLlamada ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' }}>
                                   <div style={{ fontWeight: 'bold' }}>{m.texto}</div>
-                                  <button 
-                                    onClick={() => setSalaLlamadaActiva(m.salaNombre)}
-                                    style={{ padding: '8px 14px', backgroundColor: '#ffffff', color: '#28a745', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
-                                  >
-                                    📞 Entrar a la llamada
-                                  </button>
+                                  {!esMio && (
+                                    <button 
+                                      onClick={responderLlamadaNativa}
+                                      style={{ padding: '8px 14px', backgroundColor: '#ffffff', color: '#28a745', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
+                                    >
+                                      📞 Responder Llamada
+                                    </button>
+                                  )}
                                 </div>
                               ) : (
                                 m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>
