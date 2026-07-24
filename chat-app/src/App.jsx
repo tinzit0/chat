@@ -25,7 +25,9 @@ import {
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' }
   ]
 };
 
@@ -46,12 +48,15 @@ function App() {
   
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   
+  // ESTADOS Y REFERENCIAS PARA LLAMADAS
   const [llamadaEnCurso, setLlamadaEnCurso] = useState(false);
+  const [tipoLlamada, setTipoLlamada] = useState('voz'); // 'voz' o 'video'
   const [micSilenciado, setMicSilenciado] = useState(false);
   const [camApagada, setCamApagada] = useState(false);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const remoteAudioRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
   const unsubLlamadaRef = useRef(null);
@@ -235,46 +240,37 @@ function App() {
     }
   };
 
-  // --- OBTENCIÓN DE MULTIMEDIA OPTIMIZADA PARA MÓVILES ---
-  const obtenerStreamMultimedia = async () => {
-    try {
-      // Intento 1: Pedir Micrófono con parámetros estándar para móvil/web
-      return await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true
-        }, 
-        video: false 
-      });
-    } catch (eMic) {
-      console.error("Error directo de micrófono:", eMic);
-      throw eMic;
-    }
+  // --- LÓGICA DE CAPTURA MULTIMEDIA (AUDIO / VIDEO) ---
+  const obtenerStreamMultimedia = async (modoVideo) => {
+    const constraints = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      },
+      video: modoVideo ? { facingMode: 'user' } : false
+    };
+
+    return await navigator.mediaDevices.getUserMedia(constraints);
   };
 
-  const iniciarLlamadaNativa = async () => {
+  const iniciarLlamadaNativa = async (modo = 'voz') => {
     if (!chatActivo || !user) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
     const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
 
+    setTipoLlamada(modo);
+    setCamApagada(modo === 'voz');
+
     try {
-      const stream = await obtenerStreamMultimedia();
+      const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
       setLlamadaEnCurso(true);
 
-      // Intentar agregar cámara de forma silenciosa si existe
-      try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'user' } 
-        });
-        const vTrack = videoStream.getVideoTracks()[0];
-        if (vTrack) stream.addTrack(vTrack);
-      } catch (eVid) {
-        console.log("Cámara no disponible, continuando solo con voz");
-      }
-
       setTimeout(() => {
-        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        if (localVideoRef.current && modo === 'video') {
+          localVideoRef.current.srcObject = stream;
+        }
       }, 300);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -283,16 +279,24 @@ function App() {
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       const remoteStream = new MediaStream();
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
-
       pc.ontrack = (event) => {
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        
+        // Forzar asignación de stream de audio y video
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => {});
+        }
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch(() => {});
+        }
       };
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid });
+      await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
@@ -308,7 +312,7 @@ function App() {
         }
       });
 
-      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'answerCandidates'), (snap) => {
+      onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', 'conexion', 'offerCandidates'), (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
@@ -319,38 +323,36 @@ function App() {
       await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
         deUid: user.uid,
         paraUid: chatActivo.uid,
-        texto: '📞 Inició una llamada.',
+        texto: modo === 'video' ? '📹 Inició una videollamada.' : '📞 Inició una llamada de voz.',
         esLlamada: true,
+        modoLlamada: modo,
         leido: false,
         creadoEn: serverTimestamp()
       });
 
     } catch (err) {
-      alert(`No se pudo iniciar la llamada: ${err.name || err.message || 'Error de micrófono'}`);
+      alert(`No se pudo iniciar la llamada: ${err.message || 'Permiso de micrófono/cámara denegado.'}`);
       colgarLlamada();
     }
   };
 
-  const responderLlamadaNativa = async () => {
+  const responderLlamadaNativa = async (modo = 'voz') => {
     if (!chatActivo || !user) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
     const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', 'conexion');
 
+    setTipoLlamada(modo);
+    setCamApagada(modo === 'voz');
+
     try {
-      const stream = await obtenerStreamMultimedia();
+      const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
       setLlamadaEnCurso(true);
 
-      try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'user' } 
-        });
-        const vTrack = videoStream.getVideoTracks()[0];
-        if (vTrack) stream.addTrack(vTrack);
-      } catch (eVid) {}
-
       setTimeout(() => {
-        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        if (localVideoRef.current && modo === 'video') {
+          localVideoRef.current.srcObject = stream;
+        }
       }, 300);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -361,7 +363,15 @@ function App() {
       const remoteStream = new MediaStream();
       pc.ontrack = (event) => {
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream;
+        
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play().catch(() => {});
+        }
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteStream;
+          remoteVideoRef.current.play().catch(() => {});
+        }
       };
 
       const llamadaSnap = await getDocs(collection(db, 'chats_privados', chatId, 'llamada_activa'));
@@ -395,7 +405,7 @@ function App() {
       });
 
     } catch (err) {
-      alert(`No se pudo responder la llamada: ${err.name || err.message}`);
+      alert(`No se pudo responder la llamada: ${err.message}`);
       colgarLlamada();
     }
   };
@@ -574,13 +584,33 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {llamadaEnCurso && (
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.92)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
-            <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-              <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' }} />
-              <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333' }} />
+        {/* ELEMENTO AUDIO OCULTO PARA GARANTIZAR REPRODUCCIÓN EN LLAMADA DE VOZ */}
+        <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
 
-              <div style={{ position: 'absolute', bottom: '15px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '15px', padding: '10px' }}>
+        {/* INTERFAZ FLOTANTE NATIVA DE LLAMADA / VIDEOLLAMADA */}
+        {llamadaEnCurso && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
+            <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative', alignItems: 'center', justifyContent: 'center' }}>
+              
+              {tipoLlamada === 'video' ? (
+                <>
+                  <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' }} />
+                  {!camApagada && (
+                    <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333' }} />
+                  )}
+                </>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white', gap: '15px' }}>
+                  <div style={{ width: '100px', height: '100px', borderRadius: '50%', backgroundColor: '#0056b3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '36px', fontWeight: 'bold' }}>
+                    {(chatActivo?.nombre || 'U').charAt(0).toUpperCase()}
+                  </div>
+                  <h2>{chatActivo?.nombre || 'Usuario'}</h2>
+                  <p style={{ color: '#28a745', fontWeight: 'bold' }}>📞 Llamada de voz en curso...</p>
+                </div>
+              )}
+
+              {/* CONTROLES DE LLAMADA */}
+              <div style={{ position: 'absolute', bottom: '20px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '15px', padding: '10px' }}>
                 <button 
                   onClick={alternarMic} 
                   style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: micSilenciado ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
@@ -588,13 +618,17 @@ function App() {
                 >
                   {micSilenciado ? '🎙️❌' : '🎙️'}
                 </button>
-                <button 
-                  onClick={alternarCam} 
-                  style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: camApagada ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
-                  title={camApagada ? "Encender Cámara" : "Apagar Cámara"}
-                >
-                  {camApagada ? '📷❌' : '📷'}
-                </button>
+                
+                {tipoLlamada === 'video' && (
+                  <button 
+                    onClick={alternarCam} 
+                    style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: camApagada ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
+                    title={camApagada ? "Encender Cámara" : "Apagar Cámara"}
+                  >
+                    {camApagada ? '📷❌' : '📷'}
+                  </button>
+                )}
+
                 <button 
                   onClick={colgarLlamada} 
                   style={{ padding: '12px 24px', borderRadius: '30px', border: 'none', backgroundColor: '#dc3545', color: 'white', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}
@@ -681,19 +715,29 @@ function App() {
                 <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre || chatActivo.email.split('@')[0]}</div>
                   
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    {/* BOTÓN DE LLAMADA DE VOZ */}
                     <button 
-                      onClick={iniciarLlamadaNativa}
-                      style={{ padding: '6px 12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
-                      title="Llamar a este usuario"
+                      onClick={() => iniciarLlamadaNativa('voz')}
+                      style={{ padding: '6px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      title="Llamada de voz"
                     >
-                      📞 Llamar
+                      📞 Voz
+                    </button>
+
+                    {/* BOTÓN DE VIDEOLLAMADA */}
+                    <button 
+                      onClick={() => iniciarLlamadaNativa('video')}
+                      style={{ padding: '6px 10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      title="Videollamada"
+                    >
+                      📹 Video
                     </button>
 
                     {mensajes.length > 0 && (
                       <button 
                         onClick={vaciarChat} 
-                        style={{ padding: '6px 10px', backgroundColor: '#ffc107', color: '#212529', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+                        style={{ padding: '6px 8px', backgroundColor: '#ffc107', color: '#212529', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
                         title="Borrar todos los mensajes del chat"
                       >
                         🧹
@@ -740,10 +784,10 @@ function App() {
                                   <div style={{ fontWeight: 'bold' }}>{m.texto}</div>
                                   {!esMio && (
                                     <button 
-                                      onClick={responderLlamadaNativa}
+                                      onClick={() => responderLlamadaNativa(m.modoLlamada || 'voz')}
                                       style={{ padding: '8px 14px', backgroundColor: '#ffffff', color: '#28a745', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
                                     >
-                                      📞 Responder Llamada
+                                      📞 Responder ({m.modoLlamada === 'video' ? 'Video' : 'Voz'})
                                     </button>
                                   )}
                                 </div>
