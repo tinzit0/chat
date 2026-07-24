@@ -18,7 +18,8 @@ import {
   setDoc,
   deleteDoc,
   getDocs,
-  writeBatch
+  writeBatch,
+  updateDoc
 } from 'firebase/firestore';
 
 function App() {
@@ -53,6 +54,13 @@ function App() {
 
   // VERIFICACIÓN DE ADMINISTRADOR
   const ES_ADMIN = user?.email === 'martinub250@gmail.com';
+
+  // Pedir permiso para Notificaciones del Navegador al entrar
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (usuarioActual) => {
@@ -97,6 +105,7 @@ function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // Escuchar mensajes y marcar como LEÍDOS + NOTIFICACIONES
   useEffect(() => {
     if (!user || !chatActivo) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
@@ -108,8 +117,25 @@ function App() {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const docs = [];
       snapshot.forEach((docSnap) => {
-        docs.push({ id: docSnap.id, ...docSnap.data() });
+        const data = docSnap.data();
+        docs.push({ id: docSnap.id, ...data });
+
+        // Marcar como VISTO/LEÍDO si el mensaje no es mío y no está leído aún
+        if (data.deUid !== user.uid && !data.leido) {
+          updateDoc(doc(db, 'chats_privados', chatId, 'mensajes', docSnap.id), {
+            leido: true
+          });
+        }
       });
+
+      // Si llega un nuevo mensaje recibido estando en segundo plano, emitir Notificación
+      if (docs.length > mensajes.length && mensajes.length > 0) {
+        const ultimoMensaje = docs[docs.length - 1];
+        if (ultimoMensaje.deUid !== user.uid) {
+          lanzarNotificacion(chatActivo.nombre || 'Nuevo Mensaje', ultimoMensaje.texto || '📷 Foto o 🎤 Audio');
+        }
+      }
+
       setMensajes(docs);
     });
     return () => unsubscribe();
@@ -118,6 +144,30 @@ function App() {
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, subiendoImagen, grabandoAudio]);
+
+  // Función para reproducir sonido y notificación
+  const lanzarNotificacion = (remitente, texto) => {
+    // Reproducir un bip/pop suave mediante Web Audio API
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = 587.33; // Tono de notificación suave
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.15);
+    } catch (e) {}
+
+    // Mostrar notificación nativa si la ventana está oculta/desenfocada
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification(`💬 ${remitente}`, {
+        body: texto,
+        icon: '/favicon.ico'
+      });
+    }
+  };
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -164,6 +214,7 @@ function App() {
         deUid: user.uid,
         paraUid: chatActivo.uid,
         texto: nuevoMensaje.trim(),
+        leido: false,
         creadoEn: serverTimestamp()
       });
       setNuevoMensaje('');
@@ -196,6 +247,7 @@ function App() {
           paraUid: chatActivo.uid,
           texto: '',
           imagenUrl: urlImagen,
+          leido: false,
           creadoEn: serverTimestamp()
         });
       } else {
@@ -249,6 +301,7 @@ function App() {
               paraUid: chatActivo.uid,
               texto: '',
               audioUrl: base64Audio,
+              leido: false,
               creadoEn: serverTimestamp()
             });
           }
@@ -430,6 +483,14 @@ function App() {
                               {m.texto && <div style={{ padding: m.imagenUrl ? '8px' : '0' }}>{m.texto}</div>}
                             </div>
 
+                            {/* INDICADOR DE VISTO (Doble Check) PARA MIS MENSAJES */}
+                            {esMio && (
+                              <span style={{ fontSize: '12px', color: m.leido ? '#80d4ff' : '#ccc', fontWeight: 'bold', marginLeft: '4px' }} title={m.leido ? "Visto" : "Enviado"}>
+                                {m.leido ? '✓✓' : '✓'}
+                              </span>
+                            )}
+
+                            {/* BOTÓN 🗑️ PARA BORRAR MENSAJE */}
                             {puedeEliminar && (
                               <button 
                                 onClick={() => eliminarMensaje(m.id)}
