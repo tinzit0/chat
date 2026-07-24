@@ -39,8 +39,10 @@ function App() {
   
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   
-  // ESTADO PARA LA LLAMADA ACTIVA
-  const [urlLlamadaActiva, setUrlLlamadaActiva] = useState(null);
+  // ESTADO Y REF PARA LA LLAMADA ACTIVA DENTRO DEL NAVEGADOR
+  const [salaLlamadaActiva, setSalaLlamadaActiva] = useState(null);
+  const jitsiContainerRef = useRef(null);
+  const jitsiApiRef = useRef(null);
 
   // ESTADOS Y REFERENCIAS PARA GRABAR AUDIO
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -61,7 +63,13 @@ function App() {
   // VERIFICACIÓN DE ADMINISTRADOR
   const ES_ADMIN = user?.email === 'martinub250@gmail.com';
 
+  // Cargar SDK de Jitsi Meet externamente para uso in-app
   useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://meet.jit.si/external_api.js';
+    script.async = true;
+    document.body.appendChild(script);
+
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
@@ -144,6 +152,44 @@ function App() {
     return () => unsubscribe();
   }, [user, chatActivo, mensajes.length]);
 
+  // Inicializar Jitsi dentro del contenedor cuando hay una llamada activa
+  useEffect(() => {
+    if (salaLlamadaActiva && window.JitsiMeetExternalAPI && jitsiContainerRef.current) {
+      const domain = 'meet.jit.si';
+      const options = {
+        roomName: salaLlamadaActiva,
+        width: '100%',
+        height: '100%',
+        parentNode: jitsiContainerRef.current,
+        userInfo: {
+          displayName: nuevoNombreInput || user?.email?.split('@')[0] || 'Usuario'
+        },
+        configOverwrite: {
+          prejoinPageEnabled: false,
+          disableDeepLinking: true // Desactiva abrir/descargar la app externa
+        },
+        interfaceConfigOverwrite: {
+          MOBILE_APP_PROMO: false
+        }
+      };
+
+      jitsiApiRef.current = new window.JitsiMeetExternalAPI(domain, options);
+
+      // Al colgar desde la interfaz de Jitsi, cerrar la ventana flotante
+      jitsiApiRef.current.addEventListener('videoConferenceLeft', () => {
+        cerrarLlamada();
+      });
+    }
+  }, [salaLlamadaActiva]);
+
+  const cerrarLlamada = () => {
+    if (jitsiApiRef.current) {
+      jitsiApiRef.current.dispose();
+      jitsiApiRef.current = null;
+    }
+    setSalaLlamadaActiva(null);
+  };
+
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, subiendoImagen, grabandoAudio]);
@@ -216,28 +262,25 @@ function App() {
     }
   };
 
-  // FUNCION PARA INICIAR UNA LLAMADA
+  // INICIAR LLAMADA DENTRO DE LA APP
   const iniciarLlamada = async () => {
     if (!chatActivo || !user) return;
 
-    // Generar un id de sala único y aleatorio para este chat
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
-    const salaId = `michat-${chatId}-${Math.floor(1000 + Math.random() * 9000)}`;
-    const urlJitsi = `https://meet.jit.si/${salaId}`;
+    const salaNombre = `michatapp_${chatId}_${Math.floor(1000 + Math.random() * 9000)}`;
 
     try {
       await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
         deUid: user.uid,
         paraUid: chatActivo.uid,
-        texto: '📞 Inició una llamada de voz/video.',
+        texto: '📞 Inició una llamada en vivo.',
         esLlamada: true,
-        llamadaUrl: urlJitsi,
+        salaNombre: salaNombre,
         leido: false,
         creadoEn: serverTimestamp()
       });
 
-      // Abrir la llamada para quien la inicia
-      setUrlLlamadaActiva(urlJitsi);
+      setSalaLlamadaActiva(salaNombre);
     } catch (err) {
       console.error("Error al iniciar llamada:", err);
     }
@@ -379,25 +422,20 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* MODAL / VENTANA DE LLAMADA */}
-        {urlLlamadaActiva && (
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
-            <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {/* VENTANA EMBEBIDA 100% EN EL NAVEGADOR PARA LA LLAMADA */}
+        {salaLlamadaActiva && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.9)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px' }}>
+            <div style={{ width: '100%', maxWidth: '800px', height: '85vh', backgroundColor: '#000', borderRadius: '12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               <div style={{ padding: '10px 15px', backgroundColor: '#0056b3', color: 'white', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontWeight: 'bold' }}>📞 Llamada en curso</span>
+                <span style={{ fontWeight: 'bold', fontSize: '14px' }}>📞 Llamada en curso</span>
                 <button 
-                  onClick={() => setUrlLlamadaActiva(null)} 
+                  onClick={cerrarLlamada} 
                   style={{ padding: '6px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
                 >
-                  ✕ Salir de la llamada
+                  ✕ Salir
                 </button>
               </div>
-              <iframe 
-                src={urlLlamadaActiva} 
-                allow="camera; microphone; display-capture; autoplay" 
-                style={{ width: '100%', height: '100%', border: 'none' }}
-                title="Llamada Jitsi"
-              />
+              <div ref={jitsiContainerRef} style={{ width: '100%', flex: 1, backgroundColor: '#000' }} />
             </div>
           </div>
         )}
@@ -478,7 +516,6 @@ function App() {
                   <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre || chatActivo.email.split('@')[0]}</div>
                   
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    {/* BOTÓN INICIAR LLAMADA */}
                     <button 
                       onClick={iniciarLlamada}
                       style={{ padding: '6px 12px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '4px' }}
@@ -532,12 +569,11 @@ function App() {
                                 <audio controls src={m.audioUrl} style={{ maxWidth: '220px', height: '40px' }} />
                               )}
 
-                              {/* TARJETA / BOTÓN DE LLAMADA RECIBIDA */}
                               {m.esLlamada ? (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' }}>
                                   <div style={{ fontWeight: 'bold' }}>{m.texto}</div>
                                   <button 
-                                    onClick={() => setUrlLlamadaActiva(m.llamadaUrl)}
+                                    onClick={() => setSalaLlamadaActiva(m.salaNombre)}
                                     style={{ padding: '8px 14px', backgroundColor: '#ffffff', color: '#28a745', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
                                   >
                                     📞 Entrar a la llamada
@@ -548,7 +584,6 @@ function App() {
                               )}
                             </div>
 
-                            {/* INDICADOR DE VISTO */}
                             {esMio && (
                               <span 
                                 style={{ 
@@ -563,7 +598,6 @@ function App() {
                               </span>
                             )}
 
-                            {/* BOTÓN 🗑️ PARA BORRAR MENSAJE */}
                             {puedeEliminar && (
                               <button 
                                 onClick={() => eliminarMensaje(m.id)}
