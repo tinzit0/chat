@@ -25,7 +25,10 @@ function App() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [nombrePersona, setNombrePersona] = useState('');
   const [esRegistro, setEsRegistro] = useState(false);
+  const [editandoNombre, setEditandoNombre] = useState(false);
+  const [nuevoNombreInput, setNuevoNombreInput] = useState('');
   const [error, setError] = useState('');
 
   const [usuarios, setUsuarios] = useState([]);
@@ -54,15 +57,28 @@ function App() {
     const unsubscribe = onAuthStateChanged(auth, async (usuarioActual) => {
       setUser(usuarioActual);
       if (usuarioActual) {
-        await setDoc(doc(db, 'usuarios', usuarioActual.uid), {
-          uid: usuarioActual.uid,
-          email: usuarioActual.email,
-          nombre: usuarioActual.email.split('@')[0]
-        }, { merge: true });
+        // Verificar si ya existe en Firestore
+        const userDocRef = doc(db, 'usuarios', usuarioActual.uid);
+        const snapshot = await getDocs(query(collection(db, 'usuarios')));
+        let existe = false;
+        snapshot.forEach((d) => {
+          if (d.id === usuarioActual.uid && d.data().nombre) {
+            existe = true;
+          }
+        });
+
+        if (!existe) {
+          const nombreAUsar = nombrePersona.trim() || usuarioActual.email.split('@')[0];
+          await setDoc(userDocRef, {
+            uid: usuarioActual.uid,
+            email: usuarioActual.email,
+            nombre: nombreAUsar
+          }, { merge: true });
+        }
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [nombrePersona]);
 
   useEffect(() => {
     if (!user) return;
@@ -70,7 +86,12 @@ function App() {
       const lista = [];
       snapshot.forEach((docSnap) => {
         const datos = docSnap.data();
-        if (datos.uid !== user.uid) lista.push(datos);
+        if (datos.uid !== user.uid) {
+          lista.push(datos);
+        } else {
+          // Guardar el nombre propio actual
+          setNuevoNombreInput(datos.nombre || user.email.split('@')[0]);
+        }
       });
       setUsuarios(lista);
     });
@@ -103,10 +124,34 @@ function App() {
     e.preventDefault();
     setError('');
     try {
-      if (esRegistro) await createUserWithEmailAndPassword(auth, email, password);
-      else await signInWithEmailAndPassword(auth, email, password);
+      if (esRegistro) {
+        if (!nombrePersona.trim()) {
+          setError('Por favor ingresa un nombre para mostrar.');
+          return;
+        }
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        await setDoc(doc(db, 'usuarios', cred.user.uid), {
+          uid: cred.user.uid,
+          email: cred.user.email,
+          nombre: nombrePersona.trim()
+        });
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
     } catch (err) {
       setError(err.message);
+    }
+  };
+
+  const guardarNuevoNombre = async () => {
+    if (!user || !nuevoNombreInput.trim()) return;
+    try {
+      await setDoc(doc(db, 'usuarios', user.uid), {
+        nombre: nuevoNombreInput.trim()
+      }, { merge: true });
+      setEditandoNombre(false);
+    } catch (err) {
+      console.error("Error al actualizar nombre:", err);
     }
   };
 
@@ -136,7 +181,7 @@ function App() {
       const formData = new FormData();
       formData.append('image', file);
 
-      const respuesta = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+      const respuesta = await fetch(`https://api.api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
         method: 'POST',
         body: formData,
       });
@@ -274,7 +319,30 @@ function App() {
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 'bold' }}>👤 {user.email.split('@')[0]}</span>
+            {!editandoNombre ? (
+              <span 
+                onClick={() => setEditandoNombre(true)} 
+                style={{ fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', borderBottom: '1px dashed white' }}
+                title="Haz clic para cambiar tu nombre visible"
+              >
+                👤 {nuevoNombreInput || user.email.split('@')[0]} ✏️
+              </span>
+            ) : (
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <input 
+                  type="text" 
+                  value={nuevoNombreInput} 
+                  onChange={(e) => setNuevoNombreInput(e.target.value)} 
+                  style={{ padding: '2px 6px', borderRadius: '4px', border: 'none', fontSize: '12px' }}
+                />
+                <button onClick={guardarNuevoNombre} style={{ padding: '2px 6px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
+                  ✓
+                </button>
+                <button onClick={() => setEditandoNombre(false)} style={{ padding: '2px 6px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
+                  ✕
+                </button>
+              </div>
+            )}
             <button 
               onClick={() => { setChatActivo(null); signOut(auth); }}
               style={{ padding: '6px 12px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
@@ -298,10 +366,10 @@ function App() {
                 return (
                   <div key={u.uid} onClick={() => setChatActivo(u)} style={{ padding: '12px 15px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', backgroundColor: estaSeleccionado ? '#e6f2ff' : 'white', display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <div style={{ width: '35px', height: '35px', borderRadius: '50%', backgroundColor: '#0056b3', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '14px' }}>
-                      {u.nombre.charAt(0).toUpperCase()}
+                      {(u.nombre || u.email).charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <div style={{ fontWeight: 'bold', fontSize: '14px', color: '#111' }}>{u.nombre}</div>
+                      <div style={{ fontWeight: 'bold', fontSize: '14px', color: '#111' }}>{u.nombre || u.email.split('@')[0]}</div>
                       <div style={{ fontSize: '11px', color: '#666' }}>{u.email}</div>
                     </div>
                   </div>
@@ -314,7 +382,7 @@ function App() {
             {chatActivo ? (
               <>
                 <div style={{ padding: '10px 15px', backgroundColor: '#f0f2f5', borderBottom: '1px solid #ddd', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre}</div>
+                  <div style={{ fontWeight: 'bold', color: '#111', fontSize: '15px' }}>💬 {chatActivo.nombre || chatActivo.email.split('@')[0]}</div>
                   
                   {/* BOTÓN VACIAR TODO EL CHAT (SI HAY MENSAJES) */}
                   {mensajes.length > 0 && (
@@ -331,12 +399,11 @@ function App() {
                 <div style={{ flex: 1, overflowY: 'auto', padding: '15px', display: 'flex', flexDirection: 'column' }}>
                   {mensajes.length === 0 ? (
                     <p style={{ textAlign: 'center', color: '#888', fontSize: '13px', margin: 'auto' }}>
-                      Inicia la conversación con <b>{chatActivo.nombre}</b>.
+                      Inicia la conversación con <b>{chatActivo.nombre || chatActivo.email.split('@')[0]}</b>.
                     </p>
                   ) : (
                     mensajes.map((m) => {
                       const esMio = m.deUid === user.uid;
-                      // PUEDE ELIMINAR SI ES ADMIN O SI ES EL DUEÑO DEL MENSAJE
                       const puedeEliminar = ES_ADMIN || esMio;
 
                       return (
@@ -480,6 +547,16 @@ function App() {
       <h2 style={{ textAlign: 'center', marginTop: 0, color: '#0056b3' }}>{esRegistro ? 'Crear Cuenta' : 'Iniciar Sesión'}</h2>
       {error && <p style={{ color: 'red', fontSize: '12px', textAlign: 'center' }}>{error}</p>}
       <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {esRegistro && (
+          <input 
+            type="text" 
+            placeholder="Tu Nombre / Apodo visible" 
+            value={nombrePersona} 
+            onChange={(e) => setNombrePersona(e.target.value)} 
+            required 
+            style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} 
+          />
+        )}
         <input type="email" placeholder="Correo electrónico" value={email} onChange={(e) => setEmail(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
         <input type="password" placeholder="Contraseña (mín. 6 caracteres)" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }} />
         <button type="submit" style={{ padding: '10px', backgroundColor: '#0056b3', color: 'white', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>{esRegistro ? 'Registrarse' : 'Entrar'}</button>
