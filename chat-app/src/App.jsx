@@ -69,6 +69,7 @@ function App() {
   const [micSilenciado, setMicSilenciado] = useState(false);
   const [camApagada, setCamApagada] = useState(false);
   const [altavozActivado, setAltavozActivado] = useState(true);
+  const [audioBloqueado, setAudioBloqueado] = useState(false);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -271,11 +272,28 @@ function App() {
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = remoteStream;
       remoteAudioRef.current.volume = 1.0;
-      remoteAudioRef.current.play().catch(() => {});
+      remoteAudioRef.current.muted = false;
+      remoteAudioRef.current.play()
+        .then(() => setAudioBloqueado(false))
+        .catch(() => {
+          // El navegador bloqueó la reproducción automática de audio.
+          // Mostramos un botón para que el usuario lo active con un toque.
+          setAudioBloqueado(true);
+        });
     }
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = remoteStream;
       remoteVideoRef.current.play().catch(() => {});
+    }
+  };
+
+  const activarAudioManualmente = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = false;
+      remoteAudioRef.current.volume = 1.0;
+      remoteAudioRef.current.play()
+        .then(() => setAudioBloqueado(false))
+        .catch(() => setAudioBloqueado(true));
     }
   };
 
@@ -471,6 +489,7 @@ function App() {
     setLlamadaEnCurso(false);
     setMicSilenciado(false);
     setCamApagada(false);
+    setAudioBloqueado(false);
   };
 
   const alternarMic = () => {
@@ -652,6 +671,31 @@ function App() {
                   <h2>{chatActivo?.nombre || 'Usuario'}</h2>
                   <p style={{ color: '#28a745', fontWeight: 'bold' }}>📞 Llamada de voz en curso...</p>
                 </div>
+              )}
+
+              {/* AVISO: EL NAVEGADOR BLOQUEÓ EL AUDIO, REQUIERE TOQUE DEL USUARIO */}
+              {audioBloqueado && (
+                <button
+                  onClick={activarAudioManualmente}
+                  style={{
+                    position: 'absolute',
+                    top: '20px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    padding: '10px 18px',
+                    backgroundColor: '#ffc107',
+                    color: '#212529',
+                    border: 'none',
+                    borderRadius: '20px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    zIndex: 10,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
+                  }}
+                >
+                  🔊 Toca para activar el audio
+                </button>
               )}
 
               {/* CONTROLES DE LLAMADA */}
