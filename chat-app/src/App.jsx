@@ -23,12 +23,21 @@ import {
   updateDoc
 } from 'firebase/firestore';
 
-// Servidores STUN robustos
+// Servidores STUN y TURN (Crucial para conectar 4G con Wi-Fi)
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.services.mozilla.com' }
+    { 
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    { 
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ]
 };
 
@@ -57,10 +66,10 @@ function App() {
   const [estadoConexion, setEstadoConexion] = useState('Conectando...');
 
   const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null); // Único reproductor para voz y video
+  const remoteVideoRef = useRef(null); 
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null); // NUEVO: Contenedor persistente para el stream remoto
+  const remoteStreamRef = useRef(null); // Contenedor persistente
   const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -165,7 +174,7 @@ function App() {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, subiendoImagen, grabandoAudio]);
 
-  // NUEVO: Conectar streams al DOM cuando aparece el modal de llamada
+  // Sincronizar reproductores con React
   useEffect(() => {
     if (llamadaEnCurso) {
       if (remoteVideoRef.current && remoteStreamRef.current) {
@@ -280,13 +289,18 @@ function App() {
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
-      // Eventos de estado para UI
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') setEstadoConexion('¡Conectado!');
-        else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') colgarLlamada();
+      // Eventos de estado para UI y detección de red
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          setEstadoConexion('¡Conectado!');
+        } else if (pc.iceConnectionState === 'failed') {
+          setEstadoConexion('Fallo de red (Cuelgue e intente de nuevo)');
+        } else if (pc.iceConnectionState === 'disconnected') {
+          colgarLlamada();
+        }
       };
 
-      // NUEVO: Limpiar y escuchar pistas remotas con stream persistente
+      // Recibir stream remoto de forma persistente
       remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
         remoteStreamRef.current.addTrack(event.track);
@@ -314,7 +328,7 @@ function App() {
       await pc.setLocalDescription(offer);
       await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
 
-      // Escuchar la respuesta
+      // Escuchar la respuesta del receptor
       const unsub1 = onSnapshot(llamadaDocRef, async (snap) => {
         const data = snap.data();
         if (!pc.currentRemoteDescription && data?.answer) {
@@ -328,11 +342,13 @@ function App() {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             const candidate = new RTCIceCandidate(change.doc.data());
+            let intentos = 0;
             const checkInterval = setInterval(() => {
+              intentos++;
               if (pc.remoteDescription) {
-                pc.addIceCandidate(candidate).catch(e => console.error("Error agregando candidato ICE:", e));
+                pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
                 clearInterval(checkInterval);
-              }
+              } else if (intentos > 100) clearInterval(checkInterval);
             }, 100);
           }
         });
@@ -376,12 +392,16 @@ function App() {
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') setEstadoConexion('¡Conectado!');
-        else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') colgarLlamada();
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          setEstadoConexion('¡Conectado!');
+        } else if (pc.iceConnectionState === 'failed') {
+          setEstadoConexion('Fallo de red (Cuelgue e intente de nuevo)');
+        } else if (pc.iceConnectionState === 'disconnected') {
+          colgarLlamada();
+        }
       };
 
-      // NUEVO: Limpiar y escuchar pistas remotas con stream persistente
       remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
         remoteStreamRef.current.addTrack(event.track);
@@ -416,11 +436,13 @@ function App() {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             const candidate = new RTCIceCandidate(change.doc.data());
+            let intentos = 0;
             const checkInterval = setInterval(() => {
+              intentos++;
               if (pc.remoteDescription) {
                 pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
                 clearInterval(checkInterval);
-              }
+              } else if (intentos > 100) clearInterval(checkInterval);
             }, 100);
           }
         });
@@ -625,14 +647,14 @@ function App() {
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
             <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative', alignItems: 'center', justifyContent: 'center' }}>
               
-              {/* REPRODUCTOR UNIVERSAL (Con CSS ajustado para evitar bloqueos del navegador en voz) */}
+              {/* REPRODUCTOR UNIVERSAL */}
               <video 
                 ref={remoteVideoRef} 
                 autoPlay 
                 playsInline 
                 style={tipoLlamada === 'video' 
                   ? { width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' } 
-                  : { position: 'absolute', width: '1px', height: '1px', opacity: 0.01, zIndex: -1 }
+                  : { position: 'absolute', width: '2px', height: '2px', opacity: 0.01, zIndex: -1 } 
                 } 
               />
               
@@ -646,7 +668,7 @@ function App() {
                     {(chatActivo?.nombre || 'U').charAt(0).toUpperCase()}
                   </div>
                   <h2>{chatActivo?.nombre || 'Usuario'}</h2>
-                  <p style={{ color: estadoConexion === '¡Conectado!' ? '#28a745' : '#ffc107', fontWeight: 'bold' }}>
+                  <p style={{ color: estadoConexion === '¡Conectado!' ? '#28a745' : estadoConexion.includes('Fallo') ? '#dc3545' : '#ffc107', fontWeight: 'bold', textAlign: 'center', padding: '0 20px' }}>
                     {estadoConexion}
                   </p>
                 </div>
