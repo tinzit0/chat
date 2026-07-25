@@ -20,14 +20,16 @@ import {
   getDoc,
   getDocs,
   writeBatch,
-  updateDoc
+  updateDoc,
+  arrayUnion
 } from 'firebase/firestore';
 
-// Servidores STUN y TURN (Crucial para conectar 4G con Wi-Fi)
+// Servidores STUN y TURN
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.services.mozilla.com' },
     { 
       urls: 'turn:openrelay.metered.ca:80',
       username: 'openrelayproject',
@@ -69,7 +71,7 @@ function App() {
   const remoteVideoRef = useRef(null); 
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null); // Contenedor persistente
+  const remoteStreamRef = useRef(null); 
   const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -174,7 +176,6 @@ function App() {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, subiendoImagen, grabandoAudio]);
 
-  // Sincronizar reproductores con React
   useEffect(() => {
     if (llamadaEnCurso) {
       if (remoteVideoRef.current && remoteStreamRef.current) {
@@ -263,18 +264,16 @@ function App() {
 
   const obtenerStreamMultimedia = async (modoVideo) => {
     try {
-      // Pedimos explícitamente acceso a micrófono siempre
       return await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: modoVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
       });
     } catch (e) {
-      // Fallback seguro a solo audio
       return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
   };
 
-  // --- ARQUITECTURA TIPO WHATSAPP (CON COLA DE EVENTOS) --- //
+  // --- ARQUITECTURA: DOCUMENTO ÚNICO ANTI-RACE CONDITION ---
 
   const iniciarLlamadaNativa = async (modo = 'voz') => {
     if (!chatActivo || !user) return;
@@ -294,10 +293,12 @@ function App() {
       peerConnectionRef.current = pc;
 
       pc.oniceconnectionstatechange = () => {
-        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        if (pc.iceConnectionState === 'checking') {
+          setEstadoConexion('Buscando ruta (ICE)...');
+        } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           setEstadoConexion('¡Conectado!');
         } else if (pc.iceConnectionState === 'failed') {
-          setEstadoConexion('Fallo de red (Cuelgue e intente de nuevo)');
+          setEstadoConexion('Red bloqueada (NAT estricta)');
         } else if (pc.iceConnectionState === 'disconnected') {
           colgarLlamada();
         }
@@ -309,53 +310,61 @@ function App() {
         if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
         }
-        // Forzar reproducción para saltar bloqueos de celulares
-        remoteVideoRef.current?.play().catch(e => console.warn("Autoplay bloqueado:", e));
+        remoteVideoRef.current?.play().catch(() => {});
       };
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      const callerCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'callerCandidates');
-      const calleeCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'calleeCandidates');
       const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callId);
 
+      const offer = await pc.createOffer();
+      
+      // Crear documento primero
+      await setDoc(llamadaDocRef, { 
+        offer: { type: offer.type, sdp: offer.sdp }, 
+        de: user.uid, 
+        modo: modo,
+        callerCandidates: [],
+        calleeCandidates: []
+      });
+
+      // Recolectar red usando arrayUnion
       pc.onicecandidate = (e) => {
         if (e.candidate) {
-          addDoc(callerCandidates, e.candidate.toJSON());
+          updateDoc(llamadaDocRef, { 
+            callerCandidates: arrayUnion(e.candidate.toJSON()) 
+          }).catch(() => {});
         }
       };
 
-      // SISTEMA DE COLA: Guardar candidatos remotos si llegan antes de tiempo
-      const candidatosRemotosQueue = [];
-      const unsub2 = onSnapshot(calleeCandidates, (snap) => {
-        snap.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-            const candidate = new RTCIceCandidate(change.doc.data());
-            if (pc.remoteDescription) {
-              pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
-            } else {
-              candidatosRemotosQueue.push(candidate);
-            }
-          }
-        });
-      });
-
-      const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
+
+      let answerProcesada = false;
+      let processedCalleeCandidates = 0;
 
       const unsub1 = onSnapshot(llamadaDocRef, async (snap) => {
         const data = snap.data();
-        if (!pc.currentRemoteDescription && data?.answer) {
+        if (!data) return;
+
+        // Procesar Respuesta
+        if (data.answer && !answerProcesada) {
+          answerProcesada = true;
+          setEstadoConexion('Uniendo pistas...');
           const answer = new RTCSessionDescription(data.answer);
           await pc.setRemoteDescription(answer);
-          // Procesar todos los paquetes atrasados (Método WhatsApp)
-          candidatosRemotosQueue.forEach(c => pc.addIceCandidate(c).catch(e => console.error("Error ICE en cola:", e)));
-          candidatosRemotosQueue.length = 0; // Limpiar cola
+        }
+
+        // Agregar paquetes de red entrantes
+        if (pc.remoteDescription && data.calleeCandidates) {
+          for (let i = processedCalleeCandidates; i < data.calleeCandidates.length; i++) {
+            const candidate = new RTCIceCandidate(data.calleeCandidates[i]);
+            pc.addIceCandidate(candidate).catch(() => {});
+          }
+          processedCalleeCandidates = data.calleeCandidates.length;
         }
       });
 
-      unsubLlamadaRef.current = [unsub1, unsub2];
+      unsubLlamadaRef.current = [unsub1];
 
       await addDoc(collection(db, 'chats_privados', chatId, 'mensajes'), {
         deUid: user.uid,
@@ -369,7 +378,7 @@ function App() {
       });
 
     } catch (err) {
-      alert(`Error de conexión o permisos. Asegúrate de usar HTTPS. Detalle: ${err.message}`);
+      alert(`Error de permisos. Detalle: ${err.message}`);
       colgarLlamada();
     }
   };
@@ -378,8 +387,6 @@ function App() {
     if (!chatActivo || !user || !callIdParam) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
     const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callIdParam);
-    const callerCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'callerCandidates');
-    const calleeCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'calleeCandidates');
 
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
@@ -394,10 +401,12 @@ function App() {
       peerConnectionRef.current = pc;
 
       pc.oniceconnectionstatechange = () => {
-        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        if (pc.iceConnectionState === 'checking') {
+          setEstadoConexion('Buscando ruta (ICE)...');
+        } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           setEstadoConexion('¡Conectado!');
         } else if (pc.iceConnectionState === 'failed') {
-          setEstadoConexion('Fallo de red (Cuelgue e intente de nuevo)');
+          setEstadoConexion('Red bloqueada (NAT estricta)');
         } else if (pc.iceConnectionState === 'disconnected') {
           colgarLlamada();
         }
@@ -409,55 +418,56 @@ function App() {
         if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
         }
-        // Forzar reproducción para saltar bloqueos de celulares
-        remoteVideoRef.current?.play().catch(e => console.warn("Autoplay bloqueado:", e));
+        remoteVideoRef.current?.play().catch(() => {});
       };
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          addDoc(calleeCandidates, e.candidate.toJSON());
-        }
-      };
-
       const llamadaSnap = await getDoc(llamadaDocRef);
       if (!llamadaSnap.exists()) {
-        alert("La llamada ha finalizado.");
+        alert("La llamada ha finalizado o expiró.");
         colgarLlamada();
         return;
       }
-
-      const offerData = llamadaSnap.data().offer;
-      await pc.setRemoteDescription(new RTCSessionDescription(offerData));
-
-      // SISTEMA DE COLA: Guardar candidatos del que llama si llegan antes de tiempo
-      const candidatosRemotosQueue = [];
-      const unsub = onSnapshot(callerCandidates, (snap) => {
-        snap.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-            const candidate = new RTCIceCandidate(change.doc.data());
-            if (pc.localDescription) { 
-              pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
-            } else {
-              candidatosRemotosQueue.push(candidate);
-            }
-          }
-        });
-      });
+      
+      const dataInicial = llamadaSnap.data();
+      await pc.setRemoteDescription(new RTCSessionDescription(dataInicial.offer));
 
       const answer = await pc.createAnswer();
+
+      // Subir Respuesta
+      await updateDoc(llamadaDocRef, { 
+        answer: { type: answer.type, sdp: answer.sdp } 
+      });
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          updateDoc(llamadaDocRef, { 
+            calleeCandidates: arrayUnion(e.candidate.toJSON()) 
+          }).catch(() => {});
+        }
+      };
+
       await pc.setLocalDescription(answer);
-      await updateDoc(llamadaDocRef, { answer: { type: answer.type, sdp: answer.sdp } });
-      
-      // Procesar paquetes retrasados
-      candidatosRemotosQueue.forEach(c => pc.addIceCandidate(c).catch(e => console.error("Error ICE en cola:", e)));
-      candidatosRemotosQueue.length = 0;
+
+      let processedCallerCandidates = 0;
+      const unsub = onSnapshot(llamadaDocRef, (snap) => {
+        const data = snap.data();
+        if (!data) return;
+
+        if (pc.remoteDescription && data.callerCandidates) {
+          for (let i = processedCallerCandidates; i < data.callerCandidates.length; i++) {
+            const candidate = new RTCIceCandidate(data.callerCandidates[i]);
+            pc.addIceCandidate(candidate).catch(() => {});
+          }
+          processedCallerCandidates = data.callerCandidates.length;
+        }
+      });
 
       unsubLlamadaRef.current = [unsub];
 
     } catch (err) {
-      alert(`No se pudo responder. Asegúrate de usar HTTPS. Detalle: ${err.message}`);
+      alert(`Error de red. Detalle: ${err.message}`);
       colgarLlamada();
     }
   };
@@ -650,8 +660,33 @@ function App() {
         
         {/* INTERFAZ FLOTANTE DE LLAMADA / VIDEOLLAMADA */}
         {llamadaEnCurso && (
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
-            <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ 
+            position: 'fixed', 
+            top: 0, 
+            left: 0, 
+            right: 0, 
+            bottom: 0, 
+            backgroundColor: 'rgba(0,0,0,0.95)', 
+            zIndex: 9999, 
+            display: 'flex', 
+            flexDirection: 'column', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            padding: '15px' 
+          }}>
+            <div style={{ 
+              width: '100%', 
+              maxWidth: '750px', 
+              height: '80vh', 
+              backgroundColor: '#111', 
+              borderRadius: '16px', 
+              overflow: 'hidden', 
+              display: 'flex', 
+              flexDirection: 'column', 
+              position: 'relative', 
+              alignItems: 'center', 
+              justifyContent: 'center' 
+            }}>
               
               {/* REPRODUCTOR UNIVERSAL */}
               <video 
@@ -666,7 +701,24 @@ function App() {
               
               {tipoLlamada === 'video' ? (
                 !camApagada && (
-                  <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333', zIndex: 5 }} />
+                  <video 
+                    ref={localVideoRef} 
+                    autoPlay 
+                    playsInline 
+                    muted 
+                    style={{ 
+                      width: '130px', 
+                      height: '170px', 
+                      objectFit: 'cover', 
+                      position: 'absolute', 
+                      bottom: '80px', 
+                      right: '20px', 
+                      borderRadius: '12px', 
+                      border: '2px solid white', 
+                      backgroundColor: '#333', 
+                      zIndex: 5 
+                    }} 
+                  />
                 )
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white', gap: '15px', zIndex: 2 }}>
@@ -674,7 +726,12 @@ function App() {
                     {(chatActivo?.nombre || 'U').charAt(0).toUpperCase()}
                   </div>
                   <h2>{chatActivo?.nombre || 'Usuario'}</h2>
-                  <p style={{ color: estadoConexion === '¡Conectado!' ? '#28a745' : estadoConexion.includes('Fallo') ? '#dc3545' : '#ffc107', fontWeight: 'bold', textAlign: 'center', padding: '0 20px' }}>
+                  <p style={{ 
+                    color: estadoConexion === '¡Conectado!' ? '#28a745' : estadoConexion.includes('bloqueada') ? '#dc3545' : '#ffc107', 
+                    fontWeight: 'bold', 
+                    textAlign: 'center', 
+                    padding: '0 20px' 
+                  }}>
                     {estadoConexion}
                   </p>
                 </div>
