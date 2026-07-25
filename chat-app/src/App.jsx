@@ -263,14 +263,18 @@ function App() {
 
   const obtenerStreamMultimedia = async (modoVideo) => {
     try {
+      // Pedimos explícitamente acceso a micrófono siempre
       return await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: modoVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
       });
     } catch (e) {
+      // Fallback seguro a solo audio
       return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
   };
+
+  // --- ARQUITECTURA TIPO WHATSAPP (CON COLA DE EVENTOS) --- //
 
   const iniciarLlamadaNativa = async (modo = 'voz') => {
     if (!chatActivo || !user) return;
@@ -289,7 +293,6 @@ function App() {
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
-      // Eventos de estado para UI y detección de red
       pc.oniceconnectionstatechange = () => {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           setEstadoConexion('¡Conectado!');
@@ -300,58 +303,56 @@ function App() {
         }
       };
 
-      // Recibir stream remoto de forma persistente
       remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
         remoteStreamRef.current.addTrack(event.track);
         if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
         }
+        // Forzar reproducción para saltar bloqueos de celulares
+        remoteVideoRef.current?.play().catch(e => console.warn("Autoplay bloqueado:", e));
       };
 
-      // Agregar pistas locales
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       const callerCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'callerCandidates');
       const calleeCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'calleeCandidates');
       const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callId);
 
-      // Enviar candidatos locales
       pc.onicecandidate = (e) => {
         if (e.candidate) {
           addDoc(callerCandidates, e.candidate.toJSON());
         }
       };
 
-      // Crear y enviar Oferta
+      // SISTEMA DE COLA: Guardar candidatos remotos si llegan antes de tiempo
+      const candidatosRemotosQueue = [];
+      const unsub2 = onSnapshot(calleeCandidates, (snap) => {
+        snap.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const candidate = new RTCIceCandidate(change.doc.data());
+            if (pc.remoteDescription) {
+              pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
+            } else {
+              candidatosRemotosQueue.push(candidate);
+            }
+          }
+        });
+      });
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
 
-      // Escuchar la respuesta del receptor
       const unsub1 = onSnapshot(llamadaDocRef, async (snap) => {
         const data = snap.data();
         if (!pc.currentRemoteDescription && data?.answer) {
           const answer = new RTCSessionDescription(data.answer);
           await pc.setRemoteDescription(answer);
+          // Procesar todos los paquetes atrasados (Método WhatsApp)
+          candidatosRemotosQueue.forEach(c => pc.addIceCandidate(c).catch(e => console.error("Error ICE en cola:", e)));
+          candidatosRemotosQueue.length = 0; // Limpiar cola
         }
-      });
-
-      // Escuchar candidatos remotos
-      const unsub2 = onSnapshot(calleeCandidates, (snap) => {
-        snap.docChanges().forEach((change) => {
-          if (change.type === 'added') {
-            const candidate = new RTCIceCandidate(change.doc.data());
-            let intentos = 0;
-            const checkInterval = setInterval(() => {
-              intentos++;
-              if (pc.remoteDescription) {
-                pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
-                clearInterval(checkInterval);
-              } else if (intentos > 100) clearInterval(checkInterval);
-            }, 100);
-          }
-        });
       });
 
       unsubLlamadaRef.current = [unsub1, unsub2];
@@ -368,7 +369,7 @@ function App() {
       });
 
     } catch (err) {
-      alert(`Error accediendo a cámara/micrófono: ${err.message}`);
+      alert(`Error de conexión o permisos. Asegúrate de usar HTTPS. Detalle: ${err.message}`);
       colgarLlamada();
     }
   };
@@ -408,6 +409,8 @@ function App() {
         if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
           remoteVideoRef.current.srcObject = remoteStreamRef.current;
         }
+        // Forzar reproducción para saltar bloqueos de celulares
+        remoteVideoRef.current?.play().catch(e => console.warn("Autoplay bloqueado:", e));
       };
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
@@ -428,30 +431,33 @@ function App() {
       const offerData = llamadaSnap.data().offer;
       await pc.setRemoteDescription(new RTCSessionDescription(offerData));
 
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await updateDoc(llamadaDocRef, { answer: { type: answer.type, sdp: answer.sdp } });
-
+      // SISTEMA DE COLA: Guardar candidatos del que llama si llegan antes de tiempo
+      const candidatosRemotosQueue = [];
       const unsub = onSnapshot(callerCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             const candidate = new RTCIceCandidate(change.doc.data());
-            let intentos = 0;
-            const checkInterval = setInterval(() => {
-              intentos++;
-              if (pc.remoteDescription) {
-                pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
-                clearInterval(checkInterval);
-              } else if (intentos > 100) clearInterval(checkInterval);
-            }, 100);
+            if (pc.localDescription) { 
+              pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
+            } else {
+              candidatosRemotosQueue.push(candidate);
+            }
           }
         });
       });
 
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await updateDoc(llamadaDocRef, { answer: { type: answer.type, sdp: answer.sdp } });
+      
+      // Procesar paquetes retrasados
+      candidatosRemotosQueue.forEach(c => pc.addIceCandidate(c).catch(e => console.error("Error ICE en cola:", e)));
+      candidatosRemotosQueue.length = 0;
+
       unsubLlamadaRef.current = [unsub];
 
     } catch (err) {
-      alert(`No se pudo responder la llamada: ${err.message}`);
+      alert(`No se pudo responder. Asegúrate de usar HTTPS. Detalle: ${err.message}`);
       colgarLlamada();
     }
   };
