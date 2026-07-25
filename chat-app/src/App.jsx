@@ -76,6 +76,7 @@ function App() {
   const remoteAudioRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(new MediaStream());
   const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -268,18 +269,19 @@ function App() {
     });
   };
 
-  const vincularStreamRemoto = (remoteStream) => {
+  const vincularStreamRemoto = async (remoteStream) => {
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = remoteStream;
       remoteAudioRef.current.volume = 1.0;
       remoteAudioRef.current.muted = false;
-      remoteAudioRef.current.play()
-        .then(() => setAudioBloqueado(false))
-        .catch(() => {
-          // El navegador bloqueó la reproducción automática de audio.
-          // Mostramos un botón para que el usuario lo active con un toque.
-          setAudioBloqueado(true);
-        });
+      try {
+        await remoteAudioRef.current.play();
+        setAudioBloqueado(false);
+      } catch {
+        // El navegador bloqueó la reproducción automática de audio.
+        // Mostramos un botón para que el usuario lo active con un toque.
+        setAudioBloqueado(true);
+      }
     }
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = remoteStream;
@@ -350,11 +352,11 @@ function App() {
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      const remoteStream = new MediaStream();
+      remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
-        console.log('[LLAMADA][CALLER] ontrack disparado. Kind:', event.track.kind, 'Tracks en stream:', event.streams[0]?.getTracks().length);
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        vincularStreamRemoto(remoteStream);
+        console.log('[LLAMADA][CALLER] ontrack disparado. Kind:', event.track.kind);
+        remoteStreamRef.current.addTrack(event.track);
+        vincularStreamRemoto(remoteStreamRef.current);
       };
 
       pc.oniceconnectionstatechange = () => {
@@ -435,11 +437,11 @@ function App() {
 
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      const remoteStream = new MediaStream();
+      remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
-        console.log('[LLAMADA][RECEPTOR] ontrack disparado. Kind:', event.track.kind, 'Tracks en stream:', event.streams[0]?.getTracks().length);
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
-        vincularStreamRemoto(remoteStream);
+        console.log('[LLAMADA][RECEPTOR] ontrack disparado. Kind:', event.track.kind);
+        remoteStreamRef.current.addTrack(event.track);
+        vincularStreamRemoto(remoteStreamRef.current);
       };
 
       pc.oniceconnectionstatechange = () => {
@@ -496,6 +498,8 @@ function App() {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
+
+    remoteStreamRef.current = new MediaStream();
 
     if (unsubLlamadaRef.current && Array.isArray(unsubLlamadaRef.current)) {
       unsubLlamadaRef.current.forEach(u => u && u());
