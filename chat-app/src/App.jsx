@@ -352,8 +352,16 @@ function App() {
 
       const remoteStream = new MediaStream();
       pc.ontrack = (event) => {
+        console.log('[LLAMADA][CALLER] ontrack disparado. Kind:', event.track.kind, 'Tracks en stream:', event.streams[0]?.getTracks().length);
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
         vincularStreamRemoto(remoteStream);
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        console.log('[LLAMADA][CALLER] iceConnectionState:', pc.iceConnectionState);
+      };
+      pc.onconnectionstatechange = () => {
+        console.log('[LLAMADA][CALLER] connectionState:', pc.connectionState);
       };
 
       const offer = await pc.createOffer();
@@ -429,8 +437,16 @@ function App() {
 
       const remoteStream = new MediaStream();
       pc.ontrack = (event) => {
+        console.log('[LLAMADA][RECEPTOR] ontrack disparado. Kind:', event.track.kind, 'Tracks en stream:', event.streams[0]?.getTracks().length);
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
         vincularStreamRemoto(remoteStream);
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        console.log('[LLAMADA][RECEPTOR] iceConnectionState:', pc.iceConnectionState);
+      };
+      pc.onconnectionstatechange = () => {
+        console.log('[LLAMADA][RECEPTOR] connectionState:', pc.connectionState);
       };
 
       const llamadaSnap = await getDoc(llamadaDocRef);
