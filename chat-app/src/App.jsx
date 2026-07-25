@@ -23,27 +23,12 @@ import {
   updateDoc
 } from 'firebase/firestore';
 
-// Servidores STUN + TURN (OpenRelay) para atravesar CGNAT / 4G / 5G
+// Servidores STUN robustos
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelay',
-      credential: 'openrelay'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelay',
-      credential: 'openrelay'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelay',
-      credential: 'openrelay'
-    }
+    { urls: 'stun:stun.services.mozilla.com' }
   ]
 };
 
@@ -69,15 +54,12 @@ function App() {
   const [tipoLlamada, setTipoLlamada] = useState('voz');
   const [micSilenciado, setMicSilenciado] = useState(false);
   const [camApagada, setCamApagada] = useState(false);
-  const [altavozActivado, setAltavozActivado] = useState(true);
-  const [audioBloqueado, setAudioBloqueado] = useState(false);
+  const [estadoConexion, setEstadoConexion] = useState('Conectando...');
 
   const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const remoteAudioRef = useRef(null);
+  const remoteVideoRef = useRef(null); // Único reproductor para voz y video
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
   const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -190,9 +172,7 @@ function App() {
     } catch (e) {}
 
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-      new Notification(`💬 ${remitente}`, {
-        body: texto
-      });
+      new Notification(`💬 ${remitente}`, { body: texto });
     }
   };
 
@@ -259,49 +239,17 @@ function App() {
     }
   };
 
+  // --- ARQUITECTURA WEBRTC ANTI RACE-CONDITION ---
+
   const obtenerStreamMultimedia = async (modoVideo) => {
-    return await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      },
-      video: modoVideo ? { facingMode: 'user' } : false
-    });
-  };
-
-  // DESBLOQUEO MANUAL / REPRODUCCIÓN DENTRO DEL GESTO
-  const desbloquearAudioNavegador = () => {
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.muted = false;
-      remoteAudioRef.current.volume = 1.0;
-      remoteAudioRef.current.play()
-        .then(() => setAudioBloqueado(false))
-        .catch(() => setAudioBloqueado(true));
-    }
-  };
-
-  const alternarAltavoz = async () => {
-    const nuevoEstado = !altavozActivado;
-    setAltavozActivado(nuevoEstado);
-
-    const elAudio = remoteAudioRef.current;
-    if (!elAudio) return;
-
-    if (typeof elAudio.setSinkId === 'function') {
-      try {
-        const dispositivos = await navigator.mediaDevices.enumerateDevices();
-        const salidasAudio = dispositivos.filter(d => d.kind === 'audiooutput');
-        
-        if (salidasAudio.length > 0) {
-          const destino = nuevoEstado ? (salidasAudio[0]?.deviceId || '') : (salidasAudio[1]?.deviceId || salidasAudio[0]?.deviceId || '');
-          await elAudio.setSinkId(destino);
-        }
-      } catch (e) {
-        console.warn("No se pudo cambiar el dispositivo de salida:", e);
-      }
-    } else {
-      elAudio.volume = nuevoEstado ? 1.0 : 0.3;
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: modoVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
+      });
+    } catch (e) {
+      // Fallback seguro a solo audio si la cámara falla
+      return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
   };
 
@@ -309,70 +257,79 @@ function App() {
     if (!chatActivo || !user) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
     const callId = `call_${Date.now()}`;
-    const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callId);
-
+    
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
-    setAltavozActivado(true);
-
-    // 1. DESBLOQUEAR EL AUDIO DENTRO DEL EVENTO DE CLIC
-    desbloquearAudioNavegador();
+    setEstadoConexion('Iniciando...');
+    setLlamadaEnCurso(true);
 
     try {
       const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
-      setLlamadaEnCurso(true);
 
       setTimeout(() => {
         if (localVideoRef.current && modo === 'video') {
           localVideoRef.current.srcObject = stream;
         }
-      }, 300);
+      }, 100);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
+      // Eventos de estado para UI
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') setEstadoConexion('¡Conectado!');
+        else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') colgarLlamada();
+      };
+
+      // Recibir stream remoto
+      pc.ontrack = (event) => {
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+        }
+      };
+
+      // Agregar pistas locales
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      remoteStreamRef.current = new MediaStream();
+      // Referencias a las subcolecciones de candidatos
+      const callerCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'callerCandidates');
+      const calleeCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'calleeCandidates');
+      const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callId);
 
-      pc.ontrack = (event) => {
-        remoteStreamRef.current.addTrack(event.track);
-
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStreamRef.current;
-          remoteAudioRef.current.play().catch(() => setAudioBloqueado(true));
-        }
-
-        if (remoteVideoRef.current && modo === 'video') {
-          remoteVideoRef.current.srcObject = remoteStreamRef.current;
-          remoteVideoRef.current.play().catch(() => {});
-        }
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
-
+      // Enviar candidatos locales
       pc.onicecandidate = (e) => {
         if (e.candidate) {
-          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'offerCandidates'), e.candidate.toJSON());
+          addDoc(callerCandidates, e.candidate.toJSON());
         }
       };
 
-      const unsub1 = onSnapshot(llamadaDocRef, (snap) => {
+      // Crear y enviar Oferta
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
+
+      // Escuchar la respuesta del receptor
+      const unsub1 = onSnapshot(llamadaDocRef, async (snap) => {
         const data = snap.data();
-        if (pc.remoteDescription === null && data?.answer) {
+        if (!pc.currentRemoteDescription && data?.answer) {
           const answer = new RTCSessionDescription(data.answer);
-          pc.setRemoteDescription(answer);
+          await pc.setRemoteDescription(answer);
         }
       });
 
-      const unsub2 = onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'answerCandidates'), (snap) => {
+      // Escuchar candidatos remotos con espera activa (Fix Race Condition)
+      const unsub2 = onSnapshot(calleeCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
-            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            const candidate = new RTCIceCandidate(change.doc.data());
+            // Esperar a que exista la descripción remota antes de agregar
+            const checkInterval = setInterval(() => {
+              if (pc.remoteDescription) {
+                pc.addIceCandidate(candidate).catch(e => console.error("Error agregando candidato ICE:", e));
+                clearInterval(checkInterval);
+              }
+            }, 100);
           }
         });
       });
@@ -391,7 +348,7 @@ function App() {
       });
 
     } catch (err) {
-      alert(`No se pudo iniciar la llamada: ${err.message || 'Permiso denegado.'}`);
+      alert(`Error accediendo a cámara/micrófono: ${err.message}`);
       colgarLlamada();
     }
   };
@@ -400,46 +357,47 @@ function App() {
     if (!chatActivo || !user || !callIdParam) return;
     const chatId = [user.uid, chatActivo.uid].sort().join('_');
     const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callIdParam);
+    const callerCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'callerCandidates');
+    const calleeCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'calleeCandidates');
 
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
-    setAltavozActivado(true);
-
-    // 1. DESBLOQUEAR EL AUDIO DENTRO DEL EVENTO DE CLIC
-    desbloquearAudioNavegador();
+    setEstadoConexion('Conectando...');
+    setLlamadaEnCurso(true);
 
     try {
       const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
-      setLlamadaEnCurso(true);
 
       setTimeout(() => {
         if (localVideoRef.current && modo === 'video') {
           localVideoRef.current.srcObject = stream;
         }
-      }, 300);
+      }, 100);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-      remoteStreamRef.current = new MediaStream();
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') setEstadoConexion('¡Conectado!');
+        else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') colgarLlamada();
+      };
 
       pc.ontrack = (event) => {
-        remoteStreamRef.current.addTrack(event.track);
-
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStreamRef.current;
-          remoteAudioRef.current.play().catch(() => setAudioBloqueado(true));
-        }
-
-        if (remoteVideoRef.current && modo === 'video') {
-          remoteVideoRef.current.srcObject = remoteStreamRef.current;
-          remoteVideoRef.current.play().catch(() => {});
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0];
         }
       };
 
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          addDoc(calleeCandidates, e.candidate.toJSON());
+        }
+      };
+
+      // Leer la oferta guardada
       const llamadaSnap = await getDoc(llamadaDocRef);
       if (!llamadaSnap.exists()) {
         alert("La llamada ha finalizado.");
@@ -450,21 +408,22 @@ function App() {
       const offerData = llamadaSnap.data().offer;
       await pc.setRemoteDescription(new RTCSessionDescription(offerData));
 
+      // Crear y enviar la respuesta
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-
       await updateDoc(llamadaDocRef, { answer: { type: answer.type, sdp: answer.sdp } });
 
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          addDoc(collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'answerCandidates'), e.candidate.toJSON());
-        }
-      };
-
-      const unsub = onSnapshot(collection(db, 'chats_privados', chatId, 'llamada_activa', callIdParam, 'offerCandidates'), (snap) => {
+      // Escuchar candidatos remotos con espera activa
+      const unsub = onSnapshot(callerCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
-            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            const candidate = new RTCIceCandidate(change.doc.data());
+            const checkInterval = setInterval(() => {
+              if (pc.remoteDescription) {
+                pc.addIceCandidate(candidate).catch(e => console.error("Error ICE:", e));
+                clearInterval(checkInterval);
+              }
+            }, 100);
           }
         });
       });
@@ -488,7 +447,9 @@ function App() {
       localStreamRef.current = null;
     }
 
-    remoteStreamRef.current = null;
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
 
     if (unsubLlamadaRef.current && Array.isArray(unsubLlamadaRef.current)) {
       unsubLlamadaRef.current.forEach(u => u && u());
@@ -498,7 +459,7 @@ function App() {
     setLlamadaEnCurso(false);
     setMicSilenciado(false);
     setCamApagada(false);
-    setAudioBloqueado(false);
+    setEstadoConexion('Finalizada');
   };
 
   const alternarMic = () => {
@@ -657,56 +618,37 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* REPRODUCTOR DE AUDIO REMOTO INDEPENDIENTE (NUNCA SE OCULTA O ELIMINA DEL DOM) */}
-        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
-
         {/* INTERFAZ FLOTANTE DE LLAMADA / VIDEOLLAMADA */}
         {llamadaEnCurso && (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
             <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative', alignItems: 'center', justifyContent: 'center' }}>
               
+              {/* REPRODUCTOR UNIVERSAL (Se usa para voz y video para evitar bloqueos) */}
+              <video 
+                ref={remoteVideoRef} 
+                autoPlay 
+                playsInline 
+                style={tipoLlamada === 'video' ? { width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' } : { position: 'absolute', width: 0, height: 0, opacity: 0 }} 
+              />
+              
               {tipoLlamada === 'video' ? (
-                <>
-                  <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' }} />
-                  {!camApagada && (
-                    <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333' }} />
-                  )}
-                </>
+                !camApagada && (
+                  <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '130px', height: '170px', objectFit: 'cover', position: 'absolute', bottom: '80px', right: '20px', borderRadius: '12px', border: '2px solid white', backgroundColor: '#333', zIndex: 5 }} />
+                )
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white', gap: '15px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white', gap: '15px', zIndex: 2 }}>
                   <div style={{ width: '100px', height: '100px', borderRadius: '50%', backgroundColor: '#0056b3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '36px', fontWeight: 'bold' }}>
                     {(chatActivo?.nombre || 'U').charAt(0).toUpperCase()}
                   </div>
                   <h2>{chatActivo?.nombre || 'Usuario'}</h2>
-                  <p style={{ color: '#28a745', fontWeight: 'bold' }}>📞 Llamada de voz en curso...</p>
+                  <p style={{ color: estadoConexion === '¡Conectado!' ? '#28a745' : '#ffc107', fontWeight: 'bold' }}>
+                    {estadoConexion}
+                  </p>
                 </div>
               )}
 
-              {/* BOTÓN RECURSO DE EMERGENCIA SI EL NAVEGADOR BLOQUEA AUDIO */}
-              {audioBloqueado && (
-                <button
-                  onClick={desbloquearAudioNavegador}
-                  style={{
-                    position: 'absolute',
-                    top: '20px',
-                    padding: '10px 18px',
-                    backgroundColor: '#ffc107',
-                    color: '#212529',
-                    border: 'none',
-                    borderRadius: '20px',
-                    cursor: 'pointer',
-                    fontWeight: 'bold',
-                    fontSize: '13px',
-                    zIndex: 10
-                  }}
-                >
-                  🔊 Toca para escuchar el audio
-                </button>
-              )}
-
               {/* CONTROLES DE LLAMADA */}
-              <div style={{ position: 'absolute', bottom: '20px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '12px', padding: '10px' }}>
-                
+              <div style={{ position: 'absolute', bottom: '20px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '12px', padding: '10px', zIndex: 10 }}>
                 <button 
                   onClick={alternarMic} 
                   style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: micSilenciado ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
@@ -715,14 +657,6 @@ function App() {
                   {micSilenciado ? '🎙️❌' : '🎙️'}
                 </button>
                 
-                <button 
-                  onClick={alternarAltavoz} 
-                  style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: altavozActivado ? '#28a745' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
-                  title={altavozActivado ? "Altavoz Activado" : "Cambiar a Altavoz"}
-                >
-                  {altavozActivado ? '🔊' : '🔈'}
-                </button>
-
                 {tipoLlamada === 'video' && (
                   <button 
                     onClick={alternarCam} 
