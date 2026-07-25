@@ -60,6 +60,7 @@ function App() {
   const remoteVideoRef = useRef(null); // Único reproductor para voz y video
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null); // NUEVO: Contenedor persistente para el stream remoto
   const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -164,6 +165,18 @@ function App() {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes, subiendoImagen, grabandoAudio]);
 
+  // NUEVO: Conectar streams al DOM cuando aparece el modal de llamada
+  useEffect(() => {
+    if (llamadaEnCurso) {
+      if (remoteVideoRef.current && remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      }
+      if (localVideoRef.current && localStreamRef.current && !camApagada) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+    }
+  }, [llamadaEnCurso, camApagada]);
+
   const lanzarNotificacion = (remitente, texto) => {
     try {
       notifAudioRef.current.volume = 0.1;
@@ -239,8 +252,6 @@ function App() {
     }
   };
 
-  // --- ARQUITECTURA WEBRTC ANTI RACE-CONDITION ---
-
   const obtenerStreamMultimedia = async (modoVideo) => {
     try {
       return await navigator.mediaDevices.getUserMedia({
@@ -248,7 +259,6 @@ function App() {
         video: modoVideo ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
       });
     } catch (e) {
-      // Fallback seguro a solo audio si la cámara falla
       return await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
   };
@@ -267,12 +277,6 @@ function App() {
       const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
 
-      setTimeout(() => {
-        if (localVideoRef.current && modo === 'video') {
-          localVideoRef.current.srcObject = stream;
-        }
-      }, 100);
-
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
@@ -282,17 +286,18 @@ function App() {
         else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') colgarLlamada();
       };
 
-      // Recibir stream remoto
+      // NUEVO: Limpiar y escuchar pistas remotas con stream persistente
+      remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
+        remoteStreamRef.current.addTrack(event.track);
+        if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
         }
       };
 
       // Agregar pistas locales
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      // Referencias a las subcolecciones de candidatos
       const callerCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'callerCandidates');
       const calleeCandidates = collection(db, 'chats_privados', chatId, 'llamada_activa', callId, 'calleeCandidates');
       const llamadaDocRef = doc(db, 'chats_privados', chatId, 'llamada_activa', callId);
@@ -309,7 +314,7 @@ function App() {
       await pc.setLocalDescription(offer);
       await setDoc(llamadaDocRef, { offer: { type: offer.type, sdp: offer.sdp }, de: user.uid, modo: modo });
 
-      // Escuchar la respuesta del receptor
+      // Escuchar la respuesta
       const unsub1 = onSnapshot(llamadaDocRef, async (snap) => {
         const data = snap.data();
         if (!pc.currentRemoteDescription && data?.answer) {
@@ -318,12 +323,11 @@ function App() {
         }
       });
 
-      // Escuchar candidatos remotos con espera activa (Fix Race Condition)
+      // Escuchar candidatos remotos
       const unsub2 = onSnapshot(calleeCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
             const candidate = new RTCIceCandidate(change.doc.data());
-            // Esperar a que exista la descripción remota antes de agregar
             const checkInterval = setInterval(() => {
               if (pc.remoteDescription) {
                 pc.addIceCandidate(candidate).catch(e => console.error("Error agregando candidato ICE:", e));
@@ -369,12 +373,6 @@ function App() {
       const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
 
-      setTimeout(() => {
-        if (localVideoRef.current && modo === 'video') {
-          localVideoRef.current.srcObject = stream;
-        }
-      }, 100);
-
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnectionRef.current = pc;
 
@@ -383,9 +381,12 @@ function App() {
         else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') colgarLlamada();
       };
 
+      // NUEVO: Limpiar y escuchar pistas remotas con stream persistente
+      remoteStreamRef.current = new MediaStream();
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
+        remoteStreamRef.current.addTrack(event.track);
+        if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
         }
       };
 
@@ -397,7 +398,6 @@ function App() {
         }
       };
 
-      // Leer la oferta guardada
       const llamadaSnap = await getDoc(llamadaDocRef);
       if (!llamadaSnap.exists()) {
         alert("La llamada ha finalizado.");
@@ -408,12 +408,10 @@ function App() {
       const offerData = llamadaSnap.data().offer;
       await pc.setRemoteDescription(new RTCSessionDescription(offerData));
 
-      // Crear y enviar la respuesta
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await updateDoc(llamadaDocRef, { answer: { type: answer.type, sdp: answer.sdp } });
 
-      // Escuchar candidatos remotos con espera activa
       const unsub = onSnapshot(callerCandidates, (snap) => {
         snap.docChanges().forEach((change) => {
           if (change.type === 'added') {
@@ -445,6 +443,10 @@ function App() {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
+    }
+
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach(track => track.stop());
     }
 
     if (remoteVideoRef.current) {
@@ -623,12 +625,15 @@ function App() {
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '15px' }}>
             <div style={{ width: '100%', maxWidth: '750px', height: '80vh', backgroundColor: '#111', borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column', position: 'relative', alignItems: 'center', justifyContent: 'center' }}>
               
-              {/* REPRODUCTOR UNIVERSAL (Se usa para voz y video para evitar bloqueos) */}
+              {/* REPRODUCTOR UNIVERSAL (Con CSS ajustado para evitar bloqueos del navegador en voz) */}
               <video 
                 ref={remoteVideoRef} 
                 autoPlay 
                 playsInline 
-                style={tipoLlamada === 'video' ? { width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' } : { position: 'absolute', width: 0, height: 0, opacity: 0 }} 
+                style={tipoLlamada === 'video' 
+                  ? { width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#222' } 
+                  : { position: 'absolute', width: '1px', height: '1px', opacity: 0.01, zIndex: -1 }
+                } 
               />
               
               {tipoLlamada === 'video' ? (
