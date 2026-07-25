@@ -28,6 +28,7 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
     {
       urls: 'turn:openrelay.metered.ca:80',
       username: 'openrelay',
@@ -76,7 +77,7 @@ function App() {
   const remoteAudioRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(new MediaStream());
+  const remoteStreamRef = useRef(null);
   const unsubLlamadaRef = useRef([]);
 
   const [grabandoAudio, setGrabandoAudio] = useState(false);
@@ -269,27 +270,8 @@ function App() {
     });
   };
 
-  const vincularStreamRemoto = async (remoteStream) => {
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = remoteStream;
-      remoteAudioRef.current.volume = 1.0;
-      remoteAudioRef.current.muted = false;
-      try {
-        await remoteAudioRef.current.play();
-        setAudioBloqueado(false);
-      } catch {
-        // El navegador bloqueó la reproducción automática de audio.
-        // Mostramos un botón para que el usuario lo active con un toque.
-        setAudioBloqueado(true);
-      }
-    }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch(() => {});
-    }
-  };
-
-  const activarAudioManualmente = () => {
+  // DESBLOQUEO MANUAL / REPRODUCCIÓN DENTRO DEL GESTO
+  const desbloquearAudioNavegador = () => {
     if (remoteAudioRef.current) {
       remoteAudioRef.current.muted = false;
       remoteAudioRef.current.volume = 1.0;
@@ -299,7 +281,6 @@ function App() {
     }
   };
 
-  // FUNCIÓN PARA CAMBIAR ENTRE ALTAVOZ Y AURICULAR
   const alternarAltavoz = async () => {
     const nuevoEstado = !altavozActivado;
     setAltavozActivado(nuevoEstado);
@@ -313,7 +294,6 @@ function App() {
         const salidasAudio = dispositivos.filter(d => d.kind === 'audiooutput');
         
         if (salidasAudio.length > 0) {
-          // Seleccionar dispositivo según estado
           const destino = nuevoEstado ? (salidasAudio[0]?.deviceId || '') : (salidasAudio[1]?.deviceId || salidasAudio[0]?.deviceId || '');
           await elAudio.setSinkId(destino);
         }
@@ -321,7 +301,6 @@ function App() {
         console.warn("No se pudo cambiar el dispositivo de salida:", e);
       }
     } else {
-      // Ajuste de volumen para simular altavoz si no es compatible
       elAudio.volume = nuevoEstado ? 1.0 : 0.3;
     }
   };
@@ -335,6 +314,9 @@ function App() {
     setTipoLlamada(modo);
     setCamApagada(modo === 'voz');
     setAltavozActivado(true);
+
+    // 1. DESBLOQUEAR EL AUDIO DENTRO DEL EVENTO DE CLIC
+    desbloquearAudioNavegador();
 
     try {
       const stream = await obtenerStreamMultimedia(modo === 'video');
@@ -353,17 +335,19 @@ function App() {
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       remoteStreamRef.current = new MediaStream();
-      pc.ontrack = (event) => {
-        console.log('[LLAMADA][CALLER] ontrack disparado. Kind:', event.track.kind);
-        remoteStreamRef.current.addTrack(event.track);
-        vincularStreamRemoto(remoteStreamRef.current);
-      };
 
-      pc.oniceconnectionstatechange = () => {
-        console.log('[LLAMADA][CALLER] iceConnectionState:', pc.iceConnectionState);
-      };
-      pc.onconnectionstatechange = () => {
-        console.log('[LLAMADA][CALLER] connectionState:', pc.connectionState);
+      pc.ontrack = (event) => {
+        remoteStreamRef.current.addTrack(event.track);
+
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStreamRef.current;
+          remoteAudioRef.current.play().catch(() => setAudioBloqueado(true));
+        }
+
+        if (remoteVideoRef.current && modo === 'video') {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
       };
 
       const offer = await pc.createOffer();
@@ -421,6 +405,9 @@ function App() {
     setCamApagada(modo === 'voz');
     setAltavozActivado(true);
 
+    // 1. DESBLOQUEAR EL AUDIO DENTRO DEL EVENTO DE CLIC
+    desbloquearAudioNavegador();
+
     try {
       const stream = await obtenerStreamMultimedia(modo === 'video');
       localStreamRef.current = stream;
@@ -438,17 +425,19 @@ function App() {
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       remoteStreamRef.current = new MediaStream();
-      pc.ontrack = (event) => {
-        console.log('[LLAMADA][RECEPTOR] ontrack disparado. Kind:', event.track.kind);
-        remoteStreamRef.current.addTrack(event.track);
-        vincularStreamRemoto(remoteStreamRef.current);
-      };
 
-      pc.oniceconnectionstatechange = () => {
-        console.log('[LLAMADA][RECEPTOR] iceConnectionState:', pc.iceConnectionState);
-      };
-      pc.onconnectionstatechange = () => {
-        console.log('[LLAMADA][RECEPTOR] connectionState:', pc.connectionState);
+      pc.ontrack = (event) => {
+        remoteStreamRef.current.addTrack(event.track);
+
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStreamRef.current;
+          remoteAudioRef.current.play().catch(() => setAudioBloqueado(true));
+        }
+
+        if (remoteVideoRef.current && modo === 'video') {
+          remoteVideoRef.current.srcObject = remoteStreamRef.current;
+          remoteVideoRef.current.play().catch(() => {});
+        }
       };
 
       const llamadaSnap = await getDoc(llamadaDocRef);
@@ -499,7 +488,7 @@ function App() {
       localStreamRef.current = null;
     }
 
-    remoteStreamRef.current = new MediaStream();
+    remoteStreamRef.current = null;
 
     if (unsubLlamadaRef.current && Array.isArray(unsubLlamadaRef.current)) {
       unsubLlamadaRef.current.forEach(u => u && u());
@@ -668,8 +657,8 @@ function App() {
     return (
       <div style={{ maxWidth: '800px', margin: '20px auto', padding: '10px', fontFamily: 'sans-serif' }}>
         
-        {/* REPRODUCTOR DE AUDIO REMOTO CON SALIDA MULTIMEDIA FORZADA */}
-        <audio ref={remoteAudioRef} autoPlay playsInline controls={false} style={{ position: 'fixed', top: '-9999px' }} />
+        {/* REPRODUCTOR DE AUDIO REMOTO INDEPENDIENTE (NUNCA SE OCULTA O ELIMINA DEL DOM) */}
+        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
 
         {/* INTERFAZ FLOTANTE DE LLAMADA / VIDEOLLAMADA */}
         {llamadaEnCurso && (
@@ -693,15 +682,13 @@ function App() {
                 </div>
               )}
 
-              {/* AVISO: EL NAVEGADOR BLOQUEÓ EL AUDIO, REQUIERE TOQUE DEL USUARIO */}
+              {/* BOTÓN RECURSO DE EMERGENCIA SI EL NAVEGADOR BLOQUEA AUDIO */}
               {audioBloqueado && (
                 <button
-                  onClick={activarAudioManualmente}
+                  onClick={desbloquearAudioNavegador}
                   style={{
                     position: 'absolute',
                     top: '20px',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
                     padding: '10px 18px',
                     backgroundColor: '#ffc107',
                     color: '#212529',
@@ -710,18 +697,16 @@ function App() {
                     cursor: 'pointer',
                     fontWeight: 'bold',
                     fontSize: '13px',
-                    zIndex: 10,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
+                    zIndex: 10
                   }}
                 >
-                  🔊 Toca para activar el audio
+                  🔊 Toca para escuchar el audio
                 </button>
               )}
 
               {/* CONTROLES DE LLAMADA */}
               <div style={{ position: 'absolute', bottom: '20px', left: 0, right: 0, display: 'flex', justifyContent: 'center', gap: '12px', padding: '10px' }}>
                 
-                {/* BOTÓN MICRÓFONO */}
                 <button 
                   onClick={alternarMic} 
                   style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: micSilenciado ? '#dc3545' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
@@ -730,7 +715,6 @@ function App() {
                   {micSilenciado ? '🎙️❌' : '🎙️'}
                 </button>
                 
-                {/* BOTÓN ALTAVOZ (ALTAVOZ vs AURICULAR) */}
                 <button 
                   onClick={alternarAltavoz} 
                   style={{ padding: '12px 18px', borderRadius: '50%', border: 'none', backgroundColor: altavozActivado ? '#28a745' : '#6c757d', color: 'white', cursor: 'pointer', fontSize: '18px' }}
@@ -739,7 +723,6 @@ function App() {
                   {altavozActivado ? '🔊' : '🔈'}
                 </button>
 
-                {/* BOTÓN CÁMARA */}
                 {tipoLlamada === 'video' && (
                   <button 
                     onClick={alternarCam} 
@@ -750,7 +733,6 @@ function App() {
                   </button>
                 )}
 
-                {/* BOTÓN COLGAR */}
                 <button 
                   onClick={colgarLlamada} 
                   style={{ padding: '12px 24px', borderRadius: '30px', border: 'none', backgroundColor: '#dc3545', color: 'white', fontWeight: 'bold', cursor: 'pointer', fontSize: '15px' }}
